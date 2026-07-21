@@ -75,6 +75,7 @@ const MODELS_SECTIONS = [
           ChannelDisableThreshold: settings.ChannelDisableThreshold,
           AutomaticDisableChannelEnabled:
             settings.AutomaticDisableChannelEnabled,
+          AutoDisableTolerance: settings.AutoDisableTolerance,
           AutomaticEnableChannelEnabled: settings.AutomaticEnableChannelEnabled,
           AutomaticDisableKeywords: settings.AutomaticDisableKeywords,
           AutomaticDisableStatusCodes: settings.AutomaticDisableStatusCodes,

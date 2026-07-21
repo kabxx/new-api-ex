@@ -883,6 +883,7 @@ func TestChannel(c *gin.Context) {
 		})
 		return
 	}
+	service.ResetChannelFailCount(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -941,7 +942,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		}
 
 		// 当错误检查通过，才检查响应时间
-		if common.AutomaticDisableChannelEnabled && !shouldBanChannel {
+		if result.localErr == nil && common.AutomaticDisableChannelEnabled && !shouldBanChannel {
 			if milliseconds > disableThreshold {
 				err := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
 				newAPIError = types.NewOpenAIError(err, types.ErrorCodeChannelResponseTimeExceeded, http.StatusRequestTimeout)
@@ -949,21 +950,24 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 			}
 		}
 
-		if newAPIError == nil {
+		usingKey := common.GetContextKeyString(result.context, constant.ContextKeyChannelKey)
+		if result.localErr == nil && newAPIError == nil {
 			summary.Succeeded++
+			service.ResetChannelFailCount(channel.Id, usingKey)
 		} else {
 			summary.Failed++
 		}
 
 		// disable channel
 		if allowDisable && isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
-			processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
-			summary.Disabled++
+			if processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, usingKey, channel.GetAutoBan()), newAPIError) {
+				summary.Disabled++
+			}
 		}
 
 		// enable channel
 		if result.localErr == nil && !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
-			service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
+			service.EnableChannel(channel.Id, usingKey, channel.Name)
 			summary.Enabled++
 		}
 

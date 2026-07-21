@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -155,6 +156,7 @@ func InitOptionMap() {
 	//common.OptionMap["ChatLink2"] = common.ChatLink2
 	common.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(common.QuotaPerUnit, 'f', -1, 64)
 	common.OptionMap["RetryTimes"] = strconv.Itoa(common.RetryTimes)
+	common.OptionMap["AutoDisableTolerance"] = strconv.Itoa(common.AutoDisableTolerance)
 	common.OptionMap["DataExportInterval"] = strconv.Itoa(common.DataExportInterval)
 	common.OptionMap["DataExportDefaultTime"] = common.DataExportDefaultTime
 	common.OptionMap["DefaultCollapseSidebar"] = strconv.FormatBool(common.DefaultCollapseSidebar)
@@ -204,11 +206,24 @@ func SyncOptions(frequency int) {
 	}
 }
 
-func validateOptionValue(key string, value string) error {
-	if key == operation_setting.ToolPriceOptionKey {
-		return operation_setting.ValidateToolPricesJSON(value)
+func parseAutoDisableTolerance(value string) (int, error) {
+	tolerance, err := strconv.Atoi(value)
+	if err != nil || tolerance < 0 || tolerance > common.MaxAutoDisableTolerance {
+		return 0, fmt.Errorf("AutoDisableTolerance must be an integer between 0 and %d", common.MaxAutoDisableTolerance)
 	}
-	return nil
+	return tolerance, nil
+}
+
+func validateOptionValue(key string, value string) error {
+	switch key {
+	case operation_setting.ToolPriceOptionKey:
+		return operation_setting.ValidateToolPricesJSON(value)
+	case "AutoDisableTolerance":
+		_, err := parseAutoDisableTolerance(value)
+		return err
+	default:
+		return nil
+	}
 }
 
 func UpdateOption(key string, value string) error {
@@ -269,6 +284,13 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	var autoDisableTolerance int
+	if key == "AutoDisableTolerance" {
+		autoDisableTolerance, err = parseAutoDisableTolerance(value)
+		if err != nil {
+			return err
+		}
+	}
 	if key == retiredThemeOptionKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)
@@ -541,6 +563,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
+	case "AutoDisableTolerance":
+		common.AutoDisableTolerance = autoDisableTolerance
 	case "DataExportInterval":
 		common.DataExportInterval, _ = strconv.Atoi(value)
 	case "DataExportDefaultTime":

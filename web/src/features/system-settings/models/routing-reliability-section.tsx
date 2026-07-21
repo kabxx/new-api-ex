@@ -71,6 +71,7 @@ const routingReliabilitySchema = z
     RetryTimes: z.coerce.number().min(0).max(10),
     ChannelDisableThreshold: numericString,
     AutomaticDisableChannelEnabled: z.boolean(),
+    AutoDisableTolerance: z.coerce.number().int().min(0).max(999),
     AutomaticEnableChannelEnabled: z.boolean(),
     AutomaticDisableKeywords: z.string(),
     AutomaticDisableStatusCodes: z.string(),
@@ -120,6 +121,7 @@ type RoutingReliabilitySectionProps = {
     RetryTimes: number
     ChannelDisableThreshold: string
     AutomaticDisableChannelEnabled: boolean
+    AutoDisableTolerance: number
     AutomaticEnableChannelEnabled: boolean
     AutomaticDisableKeywords: string
     AutomaticDisableStatusCodes: string
@@ -138,6 +140,7 @@ type NormalizedRoutingReliabilityValues = {
   RetryTimes: number
   ChannelDisableThreshold: string
   AutomaticDisableChannelEnabled: boolean
+  AutoDisableTolerance: number
   AutomaticEnableChannelEnabled: boolean
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
@@ -157,6 +160,7 @@ const buildFormDefaults = (
   RetryTimes: defaults.RetryTimes ?? 0,
   ChannelDisableThreshold: defaults.ChannelDisableThreshold ?? '',
   AutomaticDisableChannelEnabled: defaults.AutomaticDisableChannelEnabled,
+  AutoDisableTolerance: defaults.AutoDisableTolerance ?? 0,
   AutomaticEnableChannelEnabled: defaults.AutomaticEnableChannelEnabled,
   AutomaticDisableKeywords: normalizeLineEndings(
     defaults.AutomaticDisableKeywords ?? ''
@@ -180,6 +184,7 @@ const normalizeDefaults = (
   RetryTimes: defaults.RetryTimes ?? 0,
   ChannelDisableThreshold: (defaults.ChannelDisableThreshold ?? '').trim(),
   AutomaticDisableChannelEnabled: defaults.AutomaticDisableChannelEnabled,
+  AutoDisableTolerance: defaults.AutoDisableTolerance ?? 0,
   AutomaticEnableChannelEnabled: defaults.AutomaticEnableChannelEnabled,
   AutomaticDisableKeywords: normalizeLineEndings(
     defaults.AutomaticDisableKeywords ?? ''
@@ -205,6 +210,7 @@ const normalizeFormValues = (
   RetryTimes: values.RetryTimes,
   ChannelDisableThreshold: values.ChannelDisableThreshold.trim(),
   AutomaticDisableChannelEnabled: values.AutomaticDisableChannelEnabled,
+  AutoDisableTolerance: values.AutoDisableTolerance,
   AutomaticEnableChannelEnabled: values.AutomaticEnableChannelEnabled,
   AutomaticDisableKeywords: normalizeLineEndings(
     values.AutomaticDisableKeywords
@@ -503,6 +509,31 @@ export function RoutingReliabilitySection({
                       />
                     </FormControl>
                   </SettingsSwitchItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='AutoDisableTolerance'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Failure tolerance')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={0}
+                        max={999}
+                        step={1}
+                        {...safeNumberFieldProps(field)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Number of consecutive failures before disabling the channel (0 = disable immediately)'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
                 )}
               />
 
