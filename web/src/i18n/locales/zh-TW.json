@@ -1373,6 +1373,8 @@
     "Disable 2FA": "停用 2FA",
     "Disable All": "停用全部",
     "Disable on failure": "失敗時停用",
+    "Count zero-token responses as failures": "將零 token 回應計為失敗",
+    "When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.": "當文字請求或渠道測試缺少 usage 資訊或總 token 為 0 時，將其計入連續失敗閾值和自動停用規則。OpenAI/Codex Responses 直連空串流會在輸出開始前視為失敗；已設定重試次數且有其他可用渠道時進入現有重試流程。已開始輸出的串流不會重試。",
     "Failure tolerance": "失敗容忍次數",
     "Disable selected channels": "停用選定的渠道",
     "Disable selected models": "停用選定的模型",

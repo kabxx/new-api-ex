@@ -99,6 +99,27 @@ func TestStreamScannerHandler_EmptyBody(t *testing.T) {
 	assert.False(t, called.Load(), "handler should not be called for empty body")
 }
 
+func TestStreamScannerHandlerWithOptionsStartsAtPreludeLimit(t *testing.T) {
+	t.Parallel()
+
+	body := "data: metadata-only\ndata: [DONE]\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	info.DisablePing = true
+
+	var received []string
+	outcome := StreamScannerHandlerWithOptions(c, resp, info, StreamScannerOptions{
+		StartResponseWhen: func(string) bool { return false },
+		MaxPendingBytes:   5,
+	}, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+
+	assert.True(t, outcome.ResponseStarted)
+	assert.True(t, outcome.BufferLimitReached)
+	assert.Equal(t, []string{"metadata-only"}, received)
+	assert.Equal(t, "text/event-stream", c.Writer.Header().Get("Content-Type"))
+}
+
 func TestStreamScannerHandler_1000Chunks(t *testing.T) {
 	t.Parallel()
 

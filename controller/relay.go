@@ -226,7 +226,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
-			service.ResetChannelFailCount(channel.Id, common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+			finalizeSuccessfulRelayAttempt(c, channel)
 			return
 		}
 
@@ -250,6 +250,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+func finalizeSuccessfulRelayAttempt(c *gin.Context, channel *model.Channel) {
+	usingKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+	if common.GetContextKeyBool(c, constant.ContextKeyZeroTokenFailure) {
+		err := types.NewErrorWithStatusCode(
+			errors.New("upstream returned zero token usage"),
+			types.ErrorCodeChannelZeroToken,
+			http.StatusBadGateway,
+		)
+		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, usingKey, channel.GetAutoBan()), err)
+		return
+	}
+	service.ResetChannelFailCount(channel.Id, usingKey)
 }
 
 var upgrader = websocket.Upgrader{

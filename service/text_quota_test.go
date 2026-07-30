@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"math"
 	"net/http/httptest"
 	"testing"
@@ -21,6 +22,59 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestShouldTreatZeroTokenAsFailureHonorsSettingAndUsage(t *testing.T) {
+	setting := operation_setting.GetMonitorSetting()
+	original := *setting
+	t.Cleanup(func() { *setting = original })
+
+	setting.ZeroTokenAsFailure = false
+	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{}))
+
+	setting.ZeroTokenAsFailure = true
+	require.True(t, ShouldTreatZeroTokenAsFailure(nil))
+	require.True(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{}))
+	require.True(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{TotalTokens: -1}))
+	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{PromptTokens: 1}))
+	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{CompletionTokens: 1}))
+	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{TotalTokens: 1}))
+	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{InputTokens: 1}))
+	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{OutputTokens: 1}))
+	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{InputTokens: 1}),
+	}))
+}
+
+func TestSupportsZeroTokenFailureCheckExcludesNonTextUsagePaths(t *testing.T) {
+	require.True(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, RelayMode: relayconstant.RelayModeChatCompletions}))
+	require.True(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses}))
+	require.True(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatClaude}))
+	require.True(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatGemini, RelayMode: relayconstant.RelayModeGemini, RequestURLPath: "/v1beta/models/gemini:generateContent"}))
+
+	require.False(t, SupportsZeroTokenFailureCheck(nil))
+	require.False(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIImage, RelayMode: relayconstant.RelayModeImagesGenerations}))
+	require.False(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatEmbedding, RelayMode: relayconstant.RelayModeEmbeddings}))
+	require.False(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatRerank, RelayMode: relayconstant.RelayModeRerank}))
+	require.False(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, RelayMode: relayconstant.RelayModeModerations}))
+	require.False(t, SupportsZeroTokenFailureCheck(&relaycommon.RelayInfo{RelayFormat: types.RelayFormatGemini, RelayMode: relayconstant.RelayModeGemini, RequestURLPath: "/v1beta/models/gemini:embedContent"}))
+}
+
+func TestShouldRecordZeroTokenFailureExcludesCanceledRequest(t *testing.T) {
+	setting := operation_setting.GetMonitorSetting()
+	original := *setting
+	setting.ZeroTokenAsFailure = true
+	t.Cleanup(func() { *setting = original })
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	requestContext, cancel := context.WithCancel(context.Background())
+	ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil).WithContext(requestContext)
+	relayInfo := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses}
+
+	require.True(t, shouldRecordZeroTokenFailure(ctx, relayInfo, &dto.Usage{}))
+	cancel()
+	require.False(t, shouldRecordZeroTokenFailure(ctx, relayInfo, &dto.Usage{}))
+}
 
 func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	gin.SetMode(gin.TestMode)

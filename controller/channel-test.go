@@ -466,6 +466,15 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			newAPIError: respErr,
 		}
 	}
+	if channelTestUsageMissing(usageA) {
+		if zeroTokenErr := channelTestZeroTokenError(info, nil); zeroTokenErr != nil {
+			return testResult{
+				context:     c,
+				localErr:    zeroTokenErr,
+				newAPIError: zeroTokenErr,
+			}
+		}
+	}
 	usage, usageErr := coerceTestUsage(usageA, isStream, info.GetEstimatePromptTokens())
 	if usageErr != nil {
 		return testResult{
@@ -488,6 +497,13 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			context:     c,
 			localErr:    bodyErr,
 			newAPIError: types.NewOpenAIError(bodyErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError),
+		}
+	}
+	if zeroTokenErr := channelTestZeroTokenError(info, usage); zeroTokenErr != nil {
+		return testResult{
+			context:     c,
+			localErr:    zeroTokenErr,
+			newAPIError: zeroTokenErr,
 		}
 	}
 	info.SetEstimatePromptTokens(usage.PromptTokens)
@@ -516,6 +532,17 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		localErr:    nil,
 		newAPIError: nil,
 	}
+}
+
+func channelTestZeroTokenError(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) *types.NewAPIError {
+	if service.SupportsZeroTokenFailureCheck(relayInfo) && service.ShouldTreatZeroTokenAsFailure(usage) {
+		return types.NewErrorWithStatusCode(
+			errors.New("upstream returned zero token usage"),
+			types.ErrorCodeChannelZeroToken,
+			http.StatusBadGateway,
+		)
+	}
+	return nil
 }
 
 func attachTestBillingRequestInput(info *relaycommon.RelayInfo, request dto.Request) error {
@@ -586,6 +613,17 @@ func coerceTestUsage(usageAny any, isStream bool, estimatePromptTokens int) (*dt
 		}
 		usage.TotalTokens = usage.PromptTokens
 		return usage, nil
+	}
+}
+
+func channelTestUsageMissing(usageAny any) bool {
+	switch usage := usageAny.(type) {
+	case *dto.Usage:
+		return usage == nil
+	case dto.Usage:
+		return false
+	default:
+		return true
 	}
 }
 

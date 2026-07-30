@@ -1373,6 +1373,8 @@
     "Disable 2FA": "Désactiver la 2FA",
     "Disable All": "Désactiver tout",
     "Disable on failure": "Désactiver en cas d'échec",
+    "Count zero-token responses as failures": "Compter les réponses sans jeton comme des échecs",
+    "When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.": "Lorsqu’une requête texte ou un test de canal ne fournit aucune donnée d’utilisation ou indique zéro jeton au total, l’échec est comptabilisé pour le seuil d’échecs consécutifs et les règles de désactivation automatique. Les flux directs OpenAI/Codex Responses vides sont traités comme des échecs avant le début de la sortie et entrent dans le mécanisme de nouvelle tentative existant lorsque des tentatives et un autre canal sont disponibles ; les flux ayant déjà commencé à produire une sortie ne sont pas relancés.",
     "Failure tolerance": "Tolérance aux échecs",
     "Disable selected channels": "Désactiver les canaux sélectionnés",
     "Disable selected models": "Désactiver les modèles sélectionnés",

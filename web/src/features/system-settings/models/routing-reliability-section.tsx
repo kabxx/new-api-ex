@@ -83,6 +83,7 @@ const routingReliabilitySchema = z
         .int()
         .min(1, 'Interval must be at least 1 minute'),
       channel_test_mode: z.enum(channelTestModes),
+      zero_token_as_failure: z.boolean(),
     }),
   })
   .superRefine((values, ctx) => {
@@ -129,6 +130,7 @@ type RoutingReliabilitySectionProps = {
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
+    'monitor_setting.zero_token_as_failure': boolean
   }
 }
 
@@ -148,6 +150,7 @@ type NormalizedRoutingReliabilityValues = {
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
+  'monitor_setting.zero_token_as_failure': boolean
 }
 
 function normalizeChannelTestMode(value?: string): ChannelTestMode {
@@ -175,6 +178,8 @@ const buildFormDefaults = (
     channel_test_mode: normalizeChannelTestMode(
       defaults['monitor_setting.channel_test_mode']
     ),
+    zero_token_as_failure:
+      defaults['monitor_setting.zero_token_as_failure'] ?? false,
   },
 })
 
@@ -202,6 +207,8 @@ const normalizeDefaults = (
   'monitor_setting.channel_test_mode': normalizeChannelTestMode(
     defaults['monitor_setting.channel_test_mode']
   ),
+  'monitor_setting.zero_token_as_failure':
+    defaults['monitor_setting.zero_token_as_failure'] ?? false,
 })
 
 const normalizeFormValues = (
@@ -226,6 +233,8 @@ const normalizeFormValues = (
   'monitor_setting.auto_test_channel_minutes':
     values.monitor_setting.auto_test_channel_minutes,
   'monitor_setting.channel_test_mode': values.monitor_setting.channel_test_mode,
+  'monitor_setting.zero_token_as_failure':
+    values.monitor_setting.zero_token_as_failure,
 })
 
 export function RoutingReliabilitySection({
@@ -500,6 +509,31 @@ export function RoutingReliabilitySection({
                       <FormLabel>{t('Disable on failure')}</FormLabel>
                       <FormDescription>
                         {t('Automatically disable channels when tests fail')}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='monitor_setting.zero_token_as_failure'
+                render={({ field }) => (
+                  <SettingsSwitchItem>
+                    <SettingsSwitchContent>
+                      <FormLabel>
+                        {t('Count zero-token responses as failures')}
+                      </FormLabel>
+                      <FormDescription>
+                        {t(
+                          'When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.'
+                        )}
                       </FormDescription>
                     </SettingsSwitchContent>
                     <FormControl>

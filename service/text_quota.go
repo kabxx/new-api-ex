@@ -394,9 +394,45 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	return "openai"
 }
 
+// ShouldTreatZeroTokenAsFailure applies the global strict-usage setting to a
+// normalized text usage value.
+func ShouldTreatZeroTokenAsFailure(usage *dto.Usage) bool {
+	return operation_setting.GetMonitorSetting().ZeroTokenAsFailure && !dto.HasPositiveOpenAIUsageTokens(effectiveBillingUsage(usage))
+}
+
+// SupportsZeroTokenFailureCheck limits strict usage checks to text generation
+// paths whose successful responses are expected to contain token usage.
+func SupportsZeroTokenFailureCheck(relayInfo *relaycommon.RelayInfo) bool {
+	if relayInfo == nil {
+		return false
+	}
+	switch relayInfo.RelayFormat {
+	case types.RelayFormatClaude,
+		types.RelayFormatOpenAIResponses,
+		types.RelayFormatOpenAIResponsesCompaction:
+		return true
+	case types.RelayFormatGemini:
+		return !strings.Contains(strings.ToLower(relayInfo.RequestURLPath), "embed")
+	case types.RelayFormatOpenAI:
+		return relayInfo.RelayMode == relayconstant.RelayModeChatCompletions || relayInfo.RelayMode == relayconstant.RelayModeCompletions
+	default:
+		return false
+	}
+}
+
+func shouldRecordZeroTokenFailure(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) bool {
+	if ctx != nil && ctx.Request != nil && ctx.Request.Context().Err() != nil {
+		return false
+	}
+	return SupportsZeroTokenFailureCheck(relayInfo) && ShouldTreatZeroTokenAsFailure(usage)
+}
+
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
+	if shouldRecordZeroTokenFailure(ctx, relayInfo, billingUsage) {
+		common.SetContextKey(ctx, constant.ContextKeyZeroTokenFailure, true)
+	}
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}

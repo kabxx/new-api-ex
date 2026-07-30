@@ -12,10 +12,12 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
-	"github.com/QuantumNous/new-api/types"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -233,7 +235,7 @@ func TestSettleTestQuotaUsesTieredBilling(t *testing.T) {
 		},
 	}
 
-	quota, result := settleTestQuota(info, types.PriceData{
+	quota, result := settleTestQuota(info, hosttypes.PriceData{
 		ModelRatio:      1,
 		CompletionRatio: 2,
 	}, &dto.Usage{
@@ -256,8 +258,8 @@ func TestBuildTestLogOtherInjectsTieredInfo(t *testing.T) {
 		},
 		ChannelMeta: &relaycommon.ChannelMeta{},
 	}
-	priceData := types.PriceData{
-		GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1},
+	priceData := hosttypes.PriceData{
+		GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1},
 	}
 	usage := &dto.Usage{
 		PromptTokensDetails: dto.InputTokenDetails{
@@ -310,6 +312,81 @@ func TestSelectChannelsForAutomaticTestScheduledSkipsManualDisabled(t *testing.T
 	require.Len(t, selected, 2)
 	require.Equal(t, 1, selected[0].Id)
 	require.Equal(t, 2, selected[1].Id)
+}
+
+func TestChannelTestZeroTokenErrorOnlyAppliesToEnabledTextUsageChecks(t *testing.T) {
+	setting := operation_setting.GetMonitorSetting()
+	original := *setting
+	previousAutomaticDisableEnabled := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() {
+		*setting = original
+		common.AutomaticDisableChannelEnabled = previousAutomaticDisableEnabled
+	})
+
+	tests := []struct {
+		name        string
+		enabled     bool
+		relayInfo   *relaycommon.RelayInfo
+		usage       *dto.Usage
+		wantFailure bool
+	}{
+		{
+			name:      "disabled text check",
+			relayInfo: &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses},
+			usage:     &dto.Usage{},
+		},
+		{
+			name:        "enabled zero text usage",
+			enabled:     true,
+			relayInfo:   &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses},
+			usage:       &dto.Usage{},
+			wantFailure: true,
+		},
+		{
+			name:        "enabled missing text usage",
+			enabled:     true,
+			relayInfo:   &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses},
+			usage:       nil,
+			wantFailure: true,
+		},
+		{
+			name:      "enabled nonzero text usage",
+			enabled:   true,
+			relayInfo: &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, RelayMode: relayconstant.RelayModeResponses},
+			usage:     &dto.Usage{OutputTokens: 1},
+		},
+		{
+			name:      "enabled image check",
+			enabled:   true,
+			relayInfo: &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIImage, RelayMode: relayconstant.RelayModeImagesGenerations},
+			usage:     &dto.Usage{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setting.ZeroTokenAsFailure = test.enabled
+			err := channelTestZeroTokenError(test.relayInfo, test.usage)
+			if !test.wantFailure {
+				require.Nil(t, err)
+				return
+			}
+			require.NotNil(t, err)
+			assert.Equal(t, types.ErrorCodeChannelZeroToken, err.GetErrorCode())
+			assert.True(t, types.IsChannelError(err))
+			assert.True(t, service.ShouldDisableChannel(err))
+		})
+	}
+}
+
+func TestChannelTestUsageMissingPreservesUpstreamSignal(t *testing.T) {
+	require.True(t, channelTestUsageMissing(nil))
+	var nilUsage *dto.Usage
+	require.True(t, channelTestUsageMissing(nilUsage))
+	require.True(t, channelTestUsageMissing("invalid"))
+	require.False(t, channelTestUsageMissing(dto.Usage{}))
+	require.False(t, channelTestUsageMissing(&dto.Usage{}))
 }
 
 func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -84,8 +85,14 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responseTextBuilder strings.Builder
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
+	var downstreamWriteErr error
+	strictOutputGate := operation_setting.GetMonitorSetting().ZeroTokenAsFailure
+	scannerOptions := helper.StreamScannerOptions{}
+	if strictOutputGate {
+		scannerOptions.StartResponseWhen = responsesStreamHasMeaningfulOutput
+	}
 
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	scannerOutcome := helper.StreamScannerHandlerWithOptions(c, resp, info, scannerOptions, func(data string, sr *helper.StreamResult) {
 
 		// 检查当前数据是否包含 completed 状态和 usage 信息
 		var streamResponse dto.ResponsesStreamResponse
@@ -94,7 +101,11 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Error(err)
 			return
 		}
-		sendResponsesStreamData(c, streamResponse, data)
+		if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
+			downstreamWriteErr = err
+			sr.Stop(err)
+			return
+		}
 		switch streamResponse.Type {
 		case "response.completed", "response.done":
 			if streamResponse.Response != nil {
@@ -157,6 +168,30 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			}
 		}
 	})
+	if downstreamWriteErr != nil || (strictOutputGate && c.Request.Context().Err() != nil) {
+		err := downstreamWriteErr
+		if err == nil {
+			err = c.Request.Context().Err()
+		}
+		return nil, types.NewErrorWithStatusCode(
+			fmt.Errorf("downstream disconnected while streaming response: %w", err),
+			types.ErrorCodeDoRequestFailed,
+			499,
+			types.ErrOptionWithSkipRetry(),
+			types.ErrOptionWithNoRecordErrorLog(),
+		)
+	}
+	if strictOutputGate && !scannerOutcome.ResponseStarted {
+		streamSummary := "unknown"
+		if info.StreamStatus != nil {
+			streamSummary = info.StreamStatus.Summary()
+		}
+		return nil, types.NewErrorWithStatusCode(
+			fmt.Errorf("upstream response stream ended before meaningful output: %s", streamSummary),
+			types.ErrorCodeChannelZeroToken,
+			http.StatusBadGateway,
+		)
+	}
 
 	if usage.CompletionTokens == 0 {
 		// 计算输出文本的 token 数量
@@ -175,4 +210,92 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
 	return usage, nil
+}
+
+type responsesStreamGateEvent struct {
+	Type            string                       `json:"type"`
+	Delta           string                       `json:"delta"`
+	Text            string                       `json:"text"`
+	Arguments       string                       `json:"arguments"`
+	Refusal         string                       `json:"refusal"`
+	PartialImageB64 string                       `json:"partial_image_b64"`
+	Response        *responsesStreamGateResponse `json:"response"`
+	Item            *responsesStreamGateItem     `json:"item"`
+	Part            *responsesStreamGateContent  `json:"part"`
+}
+
+type responsesStreamGateResponse struct {
+	Output []responsesStreamGateItem `json:"output"`
+	Usage  *dto.Usage                `json:"usage"`
+}
+
+type responsesStreamGateItem struct {
+	Type             string                       `json:"type"`
+	Name             string                       `json:"name"`
+	CallID           string                       `json:"call_id"`
+	Arguments        string                       `json:"arguments"`
+	EncryptedContent string                       `json:"encrypted_content"`
+	Content          []responsesStreamGateContent `json:"content"`
+	Summary          []responsesStreamGateContent `json:"summary"`
+}
+
+type responsesStreamGateContent struct {
+	Text    string `json:"text"`
+	Refusal string `json:"refusal"`
+}
+
+func responsesStreamHasMeaningfulOutput(data string) bool {
+	var event responsesStreamGateEvent
+	if err := common.UnmarshalJsonStr(data, &event); err != nil {
+		return false
+	}
+	if event.Delta != "" || event.Text != "" || event.Arguments != "" || event.Refusal != "" || event.PartialImageB64 != "" {
+		return true
+	}
+	switch event.Type {
+	case dto.ResponsesOutputTypeItemDone:
+		return responsesOutputItemHasMeaningfulOutput(event.Item)
+	case "response.content_part.done":
+		return event.Part != nil && (event.Part.Text != "" || event.Part.Refusal != "")
+	case "response.completed", "response.done":
+		if event.Response == nil {
+			return false
+		}
+		if dto.HasPositiveOpenAIUsageTokens(event.Response.Usage) {
+			return true
+		}
+		for i := range event.Response.Output {
+			if responsesOutputItemHasMeaningfulOutput(&event.Response.Output[i]) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func responsesOutputItemHasMeaningfulOutput(item *responsesStreamGateItem) bool {
+	if item == nil {
+		return false
+	}
+	if item.Name != "" || item.CallID != "" || item.Arguments != "" || item.EncryptedContent != "" {
+		return true
+	}
+	for _, content := range item.Content {
+		if content.Text != "" || content.Refusal != "" {
+			return true
+		}
+	}
+	for _, summary := range item.Summary {
+		if summary.Text != "" || summary.Refusal != "" {
+			return true
+		}
+	}
+	switch item.Type {
+	case "", "message", "reasoning":
+		return false
+	default:
+		return true
+	}
 }

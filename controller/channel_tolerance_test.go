@@ -9,8 +9,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -68,4 +68,42 @@ func TestProcessChannelErrorRecordsToleratedFailure(t *testing.T) {
 	require.Len(t, errorLogs, 1)
 	assert.Equal(t, channelId, errorLogs[0].ChannelId)
 	assert.Contains(t, errorLogs[0].Content, "temporary upstream failure")
+}
+
+func TestFinalizeSuccessfulRelayAttemptDoesNotResetZeroTokenFailure(t *testing.T) {
+	const channelId = 92002
+	const usingKey = "key-zero-token"
+
+	previousErrorLogEnabled := constant.ErrorLogEnabled
+	previousAutomaticDisableEnabled := common.AutomaticDisableChannelEnabled
+	previousTolerance := common.AutoDisableTolerance
+	constant.ErrorLogEnabled = false
+	common.AutomaticDisableChannelEnabled = true
+	common.AutoDisableTolerance = 2
+
+	t.Cleanup(func() {
+		service.ResetChannelFailCount(channelId, usingKey)
+		constant.ErrorLogEnabled = previousErrorLogEnabled
+		common.AutomaticDisableChannelEnabled = previousAutomaticDisableEnabled
+		common.AutoDisableTolerance = previousTolerance
+	})
+
+	assert.False(t, service.RecordChannelFailure(channelId, usingKey, common.AutoDisableTolerance))
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	common.SetContextKey(ctx, constant.ContextKeyChannelKey, usingKey)
+	common.SetContextKey(ctx, constant.ContextKeyZeroTokenFailure, true)
+	channel := &model.Channel{
+		Id:      channelId,
+		Type:    1,
+		Name:    "zero token channel",
+		AutoBan: common.GetPointer(1),
+	}
+
+	finalizeSuccessfulRelayAttempt(ctx, channel)
+
+	assert.Empty(t, recorder.Body.String())
+	assert.True(t, service.RecordChannelFailure(channelId, usingKey, common.AutoDisableTolerance))
 }

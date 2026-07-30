@@ -1373,6 +1373,8 @@
     "Disable 2FA": "Tắt 2FA",
     "Disable All": "Vô hiệu hóa tất cả",
     "Disable on failure": "Vô hiệu hóa khi lỗi",
+    "Count zero-token responses as failures": "Coi phản hồi không có token là lỗi",
+    "When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.": "Khi yêu cầu văn bản hoặc kiểm tra kênh không có dữ liệu usage hay tổng số token bằng 0, lỗi sẽ được tính vào ngưỡng lỗi liên tiếp và quy tắc tự động vô hiệu hóa. Luồng OpenAI/Codex Responses trực tiếp bị rỗng sẽ được coi là lỗi trước khi bắt đầu gửi dữ liệu và đi vào cơ chế thử lại hiện có khi còn lượt thử và có kênh khác khả dụng. Luồng đã bắt đầu gửi dữ liệu sẽ không được thử lại.",
     "Failure tolerance": "Số lỗi được phép",
     "Disable selected channels": "Vô hiệu hóa các kênh đã chọn",
     "Disable selected models": "Vô hiệu hóa các mô hình đã chọn",

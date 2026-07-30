@@ -103,6 +103,48 @@ func HasOpenAIUsageTokens(usage *Usage) bool {
 	return usage.InputTokensDetails != nil
 }
 
+// HasPositiveOpenAIUsageTokens reports whether usage contains an actual positive
+// token value rather than only the presence of an optional details object.
+func HasPositiveOpenAIUsageTokens(usage *Usage) bool {
+	if usage == nil {
+		return false
+	}
+	if usage.PromptTokens > 0 ||
+		usage.CompletionTokens > 0 ||
+		usage.TotalTokens > 0 ||
+		usage.InputTokens > 0 ||
+		usage.OutputTokens > 0 ||
+		usage.PromptCacheHitTokens > 0 ||
+		usage.ClaudeCacheCreation5mTokens > 0 ||
+		usage.ClaudeCacheCreation1hTokens > 0 {
+		return true
+	}
+	if usage.PromptTokensDetails.CachedTokens > 0 ||
+		usage.PromptTokensDetails.CachedCreationTokens > 0 ||
+		usage.PromptTokensDetails.CacheWriteTokens > 0 ||
+		usage.PromptTokensDetails.TextTokens > 0 ||
+		usage.PromptTokensDetails.ImageTokens > 0 ||
+		usage.PromptTokensDetails.AudioTokens > 0 {
+		return true
+	}
+	if usage.CompletionTokenDetails.ReasoningTokens > 0 ||
+		usage.CompletionTokenDetails.TextTokens > 0 ||
+		usage.CompletionTokenDetails.ImageTokens > 0 ||
+		usage.CompletionTokenDetails.AudioTokens > 0 {
+		return true
+	}
+	if usage.InputTokensDetails != nil &&
+		(usage.InputTokensDetails.CachedTokens > 0 ||
+			usage.InputTokensDetails.CachedCreationTokens > 0 ||
+			usage.InputTokensDetails.CacheWriteTokens > 0 ||
+			usage.InputTokensDetails.TextTokens > 0 ||
+			usage.InputTokensDetails.ImageTokens > 0 ||
+			usage.InputTokensDetails.AudioTokens > 0) {
+		return true
+	}
+	return false
+}
+
 func NewGeminiChatBillingUsage(metadata *GeminiUsageMetadata) *BillingUsage {
 	return newGeminiChatBillingUsage(metadata, false)
 }

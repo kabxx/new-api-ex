@@ -49,6 +49,42 @@ func TestNewOpenAIChatBillingUsageRequiresTokenContent(t *testing.T) {
 	assert.Equal(t, 1, billingUsage.OpenAIUsage.PromptTokens)
 }
 
+func TestHasPositiveOpenAIUsageTokensRecognizesTokenSignals(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage *Usage
+		want  bool
+	}{
+		{name: "nil usage", usage: nil, want: false},
+		{name: "empty usage", usage: &Usage{}, want: false},
+		{name: "empty input details", usage: &Usage{InputTokensDetails: &InputTokenDetails{}}, want: false},
+		{name: "negative prompt tokens", usage: &Usage{PromptTokens: -1}, want: false},
+		{name: "negative input detail", usage: &Usage{InputTokensDetails: &InputTokenDetails{TextTokens: -1}}, want: false},
+		{name: "prompt tokens", usage: &Usage{PromptTokens: 1}, want: true},
+		{name: "completion tokens", usage: &Usage{CompletionTokens: 1}, want: true},
+		{name: "total tokens", usage: &Usage{TotalTokens: 1}, want: true},
+		{name: "input tokens", usage: &Usage{InputTokens: 1}, want: true},
+		{name: "output tokens", usage: &Usage{OutputTokens: 1}, want: true},
+		{name: "prompt detail", usage: &Usage{PromptTokensDetails: InputTokenDetails{CachedTokens: 1}}, want: true},
+		{name: "completion detail", usage: &Usage{CompletionTokenDetails: OutputTokenDetails{ReasoningTokens: 1}}, want: true},
+		{name: "input detail", usage: &Usage{InputTokensDetails: &InputTokenDetails{TextTokens: 1}}, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, HasPositiveOpenAIUsageTokens(test.usage))
+		})
+	}
+}
+
+func TestHasOpenAIUsageTokensPreservesInputDetailsPresence(t *testing.T) {
+	usage := &Usage{InputTokensDetails: &InputTokenDetails{}}
+
+	assert.True(t, HasOpenAIUsageTokens(usage))
+	assert.False(t, HasPositiveOpenAIUsageTokens(usage))
+	assert.True(t, HasOpenAIUsageTokens(&Usage{PromptTokens: -1}))
+}
+
 func TestNewEstimatedGeminiChatBillingUsage(t *testing.T) {
 	billingUsage := NewEstimatedGeminiChatBillingUsage(&Usage{
 		PromptTokens:     11,

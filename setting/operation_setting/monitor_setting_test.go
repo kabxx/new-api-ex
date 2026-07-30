@@ -7,6 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMonitorSettingZeroTokenAsFailureDefaultsFalse(t *testing.T) {
+	assert.False(t, monitorSetting.ZeroTokenAsFailure)
+}
+
 func TestGetMonitorSetting_ChannelTestEnabledEnvOverridesEnabledConfig(t *testing.T) {
 	orig := monitorSetting
 	t.Cleanup(func() { monitorSetting = orig })

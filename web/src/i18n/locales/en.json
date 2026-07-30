@@ -1373,6 +1373,8 @@
     "Disable 2FA": "Disable 2FA",
     "Disable All": "Disable All",
     "Disable on failure": "Disable on failure",
+    "Count zero-token responses as failures": "Count zero-token responses as failures",
+    "When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.": "When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.",
     "Failure tolerance": "Failure tolerance",
     "Disable selected channels": "Disable selected channels",
     "Disable selected models": "Disable selected models",

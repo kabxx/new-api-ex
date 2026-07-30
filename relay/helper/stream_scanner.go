@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -31,7 +32,20 @@ const (
 	// but connected client (full TCP buffer, no server WriteTimeout) could hang
 	// the handler forever.
 	streamWriteTimeout = 30 * time.Second
+	// DefaultMaxPendingStreamBytes bounds the initial SSE prelude held while a
+	// caller waits for the first meaningful event before committing a response.
+	DefaultMaxPendingStreamBytes = 1 << 20
 )
+
+type StreamScannerOptions struct {
+	StartResponseWhen func(data string) bool
+	MaxPendingBytes   int
+}
+
+type StreamScannerOutcome struct {
+	ResponseStarted    bool
+	BufferLimitReached bool
+}
 
 func getScannerBufferSize() int {
 	if constant.StreamScannerMaxBufferMB > 0 {
@@ -75,9 +89,13 @@ func ExtendWriteDeadline(c *gin.Context) {
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
+	StreamScannerHandlerWithOptions(c, resp, info, StreamScannerOptions{}, dataHandler)
+}
+
+func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, options StreamScannerOptions, dataHandler func(data string, sr *StreamResult)) StreamScannerOutcome {
 
 	if resp == nil || dataHandler == nil {
-		return
+		return StreamScannerOutcome{}
 	}
 
 	// 无条件新建 StreamStatus
@@ -88,15 +106,31 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
 
 	var (
-		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
-		scanner     = NewStreamScanner(resp.Body)
-		ticker      = time.NewTicker(streamingTimeout)
-		pingTicker  *time.Ticker
-		writeMutex  sync.Mutex     // Mutex to protect concurrent writes
-		wg          sync.WaitGroup // 用于等待所有 goroutine 退出
-		cleanupOnce sync.Once
-		stopOnce    sync.Once
+		stopChan           = make(chan bool, 3) // 增加缓冲区避免阻塞
+		scanner            = NewStreamScanner(resp.Body)
+		ticker             = time.NewTicker(streamingTimeout)
+		pingTicker         *time.Ticker
+		writeMutex         sync.Mutex     // Mutex to protect concurrent writes
+		wg                 sync.WaitGroup // 用于等待所有 goroutine 退出
+		cleanupOnce        sync.Once
+		stopOnce           sync.Once
+		responseStarted    atomic.Bool
+		bufferLimitReached bool
 	)
+
+	startGateEnabled := options.StartResponseWhen != nil
+	maxPendingBytes := options.MaxPendingBytes
+	if maxPendingBytes <= 0 {
+		maxPendingBytes = DefaultMaxPendingStreamBytes
+	}
+	startResponse := func() {
+		copyCodexSSEHeaders(c, resp)
+		SetEventStreamHeaders(c)
+		responseStarted.Store(true)
+	}
+	if !startGateEnabled {
+		startResponse()
+	}
 
 	stop := func() {
 		stopOnce.Do(func() {
@@ -141,8 +175,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	defer cleanup()
 
 	scanner.Split(bufio.ScanLines)
-	copyCodexSSEHeaders(c, resp)
-	SetEventStreamHeaders(c)
 
 	ctx = context.WithValue(ctx, "stop_chan", stopChan)
 
@@ -168,6 +200,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			for {
 				select {
 				case <-pingTicker.C:
+					if !responseStarted.Load() {
+						continue
+					}
 					var err error
 					func() {
 						writeMutex.Lock()
@@ -237,6 +272,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			wg.Done()
 		}()
 
+		var pendingData []string
+		pendingBytes := 0
 		for scanner.Scan() {
 			// 检查是否需要停止
 			select {
@@ -265,6 +302,31 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
+				if startGateEnabled && !responseStarted.Load() {
+					shouldStart := options.StartResponseWhen(data)
+					wouldExceedLimit := len(data) > maxPendingBytes-pendingBytes
+					if !shouldStart && !wouldExceedLimit {
+						pendingData = append(pendingData, data)
+						pendingBytes += len(data)
+						continue
+					}
+					if !shouldStart {
+						bufferLimitReached = true
+						logger.LogWarn(c, fmt.Sprintf("stream prelude exceeded %d bytes; starting downstream response", maxPendingBytes))
+					}
+					startResponse()
+					for _, pending := range pendingData {
+						select {
+						case dataChan <- pending:
+						case <-ctx.Done():
+							return
+						case <-stopChan:
+							return
+						}
+					}
+					pendingData = nil
+					pendingBytes = 0
+				}
 
 				select {
 				case dataChan <- data:
@@ -306,5 +368,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
 	} else {
 		logger.LogError(c, fmt.Sprintf("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
+	}
+	return StreamScannerOutcome{
+		ResponseStarted:    responseStarted.Load(),
+		BufferLimitReached: bufferLimitReached,
 	}
 }

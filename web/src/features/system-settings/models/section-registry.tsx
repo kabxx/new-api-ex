@@ -86,6 +86,8 @@ const MODELS_SECTIONS = [
             settings['monitor_setting.auto_test_channel_minutes'],
           'monitor_setting.channel_test_mode':
             settings['monitor_setting.channel_test_mode'],
+          'monitor_setting.zero_token_as_failure':
+            settings['monitor_setting.zero_token_as_failure'],
         }}
       />
     ),

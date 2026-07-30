@@ -1373,6 +1373,8 @@
     "Disable 2FA": "2FAを無効にする",
     "Disable All": "すべて無効にする",
     "Disable on failure": "失敗時に無効にする",
+    "Count zero-token responses as failures": "ゼロトークンの応答を失敗として扱う",
+    "When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.": "テキストリクエストまたはチャネルテストで usage が返されないか総トークン数が 0 の場合、連続失敗のしきい値と自動無効化ルールに失敗として加算します。空の OpenAI/Codex Responses 直結ストリームは出力開始前に失敗として扱われ、再試行回数と別の利用可能なチャネルがある場合に既存の再試行フローへ入ります。出力開始済みのストリームは再試行しません。",
     "Failure tolerance": "失敗許容回数",
     "Disable selected channels": "選択したチャネルを無効にする",
     "Disable selected models": "選択したモデルを無効にする",

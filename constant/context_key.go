@@ -66,6 +66,10 @@ const (
 	// ContextKeyLanguage stores the user's language preference for i18n
 	ContextKeyLanguage ContextKey = "language"
 	ContextKeyIsStream ContextKey = "is_stream"
+	// ContextKeyZeroTokenFailure marks a completed text relay whose final usage
+	// had no non-zero token signal. The controller consumes it without retrying
+	// because the downstream response may already have been written.
+	ContextKeyZeroTokenFailure ContextKey = "zero_token_failure"
 
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit

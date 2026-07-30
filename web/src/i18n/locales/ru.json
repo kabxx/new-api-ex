@@ -1373,6 +1373,8 @@
     "Disable 2FA": "Отключить 2FA",
     "Disable All": "Отключить все",
     "Disable on failure": "Отключить при сбое",
+    "Count zero-token responses as failures": "Считать ответы с нулевым числом токенов ошибками",
+    "When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.": "Если текстовый запрос или проверка канала не возвращает данные usage либо общее число токенов равно нулю, ошибка учитывается в пороге последовательных сбоев и правилах автоотключения. Пустые прямые потоки OpenAI/Codex Responses считаются ошибками до начала вывода и передаются в существующий механизм повторных попыток, когда разрешены повторы и доступен другой канал. Потоки, уже начавшие вывод, повторно не запускаются.",
     "Failure tolerance": "Допустимое число сбоев",
     "Disable selected channels": "Отключить выбранные каналы",
     "Disable selected models": "Отключить выбранные модели",
