@@ -51,6 +51,12 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = info.UpstreamModelName
 	}
+	adminInfo := make(map[string]interface{})
+	AppendUsedChannelAdminInfo(c, adminInfo)
+	AppendRetryTraceAdminInfo(c, adminInfo, true)
+	if len(adminInfo) > 0 {
+		other["admin_info"] = adminInfo
+	}
 	attachQuotaSaturation(c, info, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,

@@ -214,6 +214,14 @@ func parseAutoDisableTolerance(value string) (int, error) {
 	return tolerance, nil
 }
 
+func parseRetryTimes(value string) (int, error) {
+	parsed, err := strconv.ParseInt(value, 10, strconv.IntSize)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("RetryTimes must be a non-negative integer")
+	}
+	return int(parsed), nil
+}
+
 func validateOptionValue(key string, value string) error {
 	switch key {
 	case operation_setting.ToolPriceOptionKey:
@@ -222,6 +230,13 @@ func validateOptionValue(key string, value string) error {
 		_, err := parseAutoDisableTolerance(value)
 		return err
 	default:
+		if strings.HasPrefix(key, "retry_setting.") {
+			return operation_setting.ValidateRetryOption(key, value)
+		}
+		if key == "RetryTimes" {
+			_, err := parseRetryTimes(value)
+			return err
+		}
 		return nil
 	}
 }
@@ -275,9 +290,26 @@ func UpdateOptionsBulk(values map[string]string) error {
 	if err != nil {
 		return err
 	}
+	retryValues := make(map[string]string)
 	for k, v := range values {
+		if strings.HasPrefix(k, "retry_setting.") {
+			retryValues[strings.TrimPrefix(k, "retry_setting.")] = v
+			continue
+		}
 		if err := updateOptionMap(k, v); err != nil {
 			return err
+		}
+	}
+	if len(retryValues) > 0 {
+		common.OptionMapRWMutex.Lock()
+		for key, value := range values {
+			if strings.HasPrefix(key, "retry_setting.") {
+				common.OptionMap[key] = value
+			}
+		}
+		common.OptionMapRWMutex.Unlock()
+		if !config.GlobalConfig.Update("retry_setting", retryValues) {
+			return fmt.Errorf("retry setting is not registered")
 		}
 	}
 	return nil
@@ -285,8 +317,15 @@ func UpdateOptionsBulk(values map[string]string) error {
 
 func updateOptionMap(key string, value string) (err error) {
 	var autoDisableTolerance int
+	var retryTimes int
 	if key == "AutoDisableTolerance" {
 		autoDisableTolerance, err = parseAutoDisableTolerance(value)
+		if err != nil {
+			return err
+		}
+	}
+	if key == "RetryTimes" {
+		retryTimes, err = parseRetryTimes(value)
 		if err != nil {
 			return err
 		}
@@ -358,9 +397,7 @@ func updateOptionMap(key string, value string) (err error) {
 			if !boolValue {
 				newVal = "TOKENS"
 			}
-			if cfg := config.GlobalConfig.Get("general_setting"); cfg != nil {
-				_ = config.UpdateConfigFromMap(cfg, map[string]string{"quota_display_type": newVal})
-			}
+			config.GlobalConfig.Update("general_setting", map[string]string{"quota_display_type": newVal})
 		case "DisplayTokenStatEnabled":
 			common.DisplayTokenStatEnabled = boolValue
 		case "DrawingEnabled":
@@ -562,7 +599,7 @@ func updateOptionMap(key string, value string) (err error) {
 	case "ModelRequestRateLimitGroup":
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":
-		common.RetryTimes, _ = strconv.Atoi(value)
+		common.RetryTimes = retryTimes
 	case "AutoDisableTolerance":
 		common.AutoDisableTolerance = autoDisableTolerance
 	case "DataExportInterval":
@@ -636,17 +673,12 @@ func handleConfigUpdate(key, value string) bool {
 	configName := parts[0]
 	configKey := parts[1]
 
-	// 获取配置对象
-	cfg := config.GlobalConfig.Get(configName)
-	if cfg == nil {
-		return false // 未注册的配置
-	}
-
-	// 更新配置
 	configMap := map[string]string{
 		configKey: value,
 	}
-	config.UpdateConfigFromMap(cfg, configMap)
+	if !config.GlobalConfig.Update(configName, configMap) {
+		return false // 未注册的配置
+	}
 
 	// 特定配置的后处理
 	if configName == "performance_setting" {

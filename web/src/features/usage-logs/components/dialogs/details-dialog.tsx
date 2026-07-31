@@ -17,24 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
-/*
-Copyright (C) 2023-2026 QuantumNous
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-For commercial licensing, please contact support@quantumnous.com
-*/
 import {
   Copy,
   Check,
@@ -76,6 +58,11 @@ import {
   getResponseTimeColor,
   renderAuditContent,
 } from '../../lib/format'
+import {
+  normalizeRetryTraceSummary,
+  normalizeUseChannelSummary,
+  type RetryTraceSummary,
+} from '../../lib/retry-trace'
 import {
   getLogTypeConfig,
   isPerCallBilling,
@@ -161,6 +148,107 @@ function DetailSection(props: {
         {props.children}
       </div>
     </div>
+  )
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function nonEmptyString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function RetryTrace(props: { summary: RetryTraceSummary }) {
+  const { t } = useTranslation()
+  const { entries, omitted, total } = props.summary
+
+  if (entries.length === 0 && total === 0) return null
+
+  return (
+    <DetailSection label={t('Retry Trace')}>
+      <div className='divide-border min-w-0 divide-y'>
+        {omitted > 0 && (
+          <p className='text-muted-foreground pb-2 text-xs'>
+            {t('{{omitted}} attempts omitted ({{total}} total)', {
+              omitted,
+              total,
+            })}
+          </p>
+        )}
+        {entries.map((entry) => {
+          const attempt = isFiniteNumber(entry.attempt) ? entry.attempt : '?'
+          const channel = [
+            nonEmptyString(entry.channel_name),
+            isFiniteNumber(entry.channel_id) ? `#${entry.channel_id}` : '',
+          ]
+            .filter(Boolean)
+            .join(' ')
+          const status = [
+            isFiniteNumber(entry.status_code) ? String(entry.status_code) : '',
+            nonEmptyString(entry.error_code),
+          ]
+            .filter(Boolean)
+            .join(' / ')
+          const result = [
+            nonEmptyString(entry.decision),
+            nonEmptyString(entry.outcome),
+          ]
+            .filter(Boolean)
+            .join(' / ')
+
+          return (
+            <div
+              key={entry.renderKey}
+              className='grid min-w-0 grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 gap-y-1 py-2 first:pt-0 last:pb-0 sm:grid-cols-[4.5rem_minmax(0,1fr)]'
+            >
+              <span className='text-muted-foreground font-mono text-xs'>
+                #{attempt}
+              </span>
+              <div className='flex min-w-0 flex-col gap-1'>
+                {channel && (
+                  <div className='min-w-0 text-xs break-all sm:wrap-break-word'>
+                    {channel}
+                  </div>
+                )}
+                <div className='text-muted-foreground flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 text-[11px]'>
+                  {isFiniteNumber(entry.priority) && (
+                    <span>
+                      {t('Priority')}: {entry.priority}
+                    </span>
+                  )}
+                  {isFiniteNumber(entry.multi_key_index) && (
+                    <span>
+                      {t('Key Index')}: {entry.multi_key_index}
+                    </span>
+                  )}
+                  {isFiniteNumber(entry.duration_ms) && (
+                    <span>
+                      {t('Duration')}: {entry.duration_ms} {t('ms')}
+                    </span>
+                  )}
+                  {status && (
+                    <span>
+                      {t('Status / Error')}: {status}
+                    </span>
+                  )}
+                  {isFiniteNumber(entry.delay_ms) && (
+                    <span>
+                      {t('Delay')}: {entry.delay_ms} {t('ms')}
+                    </span>
+                  )}
+                  {result && (
+                    <span>
+                      {t('Decision / Outcome')}: {result}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </DetailSection>
   )
 }
 
@@ -601,9 +689,12 @@ export function DetailsDialog(props: DetailsDialogProps) {
     props.log.type !== 6 &&
     (other?.request_path || conversionChain.length > 0)
 
-  const useChannel = other?.admin_info?.use_channel
+  const useChannelSummary = normalizeUseChannelSummary(other?.admin_info)
   const channelChain =
-    useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
+    useChannelSummary.channels.length > 0
+      ? useChannelSummary.channels.join(' → ')
+      : undefined
+  const retryTraceSummary = normalizeRetryTraceSummary(other?.admin_info)
   let reasoningEffortVariant: StatusBadgeProps['variant'] = 'green'
   if (other?.reasoning_effort === 'high') {
     reasoningEffortVariant = 'orange'
@@ -675,7 +766,26 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
 
           {channelChain && props.isAdmin && (
-            <DetailRow label={t('Retry Chain')} value={channelChain} mono />
+            <DetailRow
+              label={t('Retry Chain')}
+              value={
+                <span className='flex min-w-0 flex-col gap-0.5'>
+                  <span className='break-all'>{channelChain}</span>
+                  {useChannelSummary.omitted > 0 && (
+                    <span className='text-muted-foreground font-sans text-xs'>
+                      {t(
+                        '{{omitted}} channel selections omitted ({{total}} total)',
+                        {
+                          omitted: useChannelSummary.omitted,
+                          total: useChannelSummary.total,
+                        }
+                      )}
+                    </span>
+                  )}
+                </span>
+              }
+              mono
+            />
           )}
 
           {props.log.token_name && (
@@ -739,6 +849,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
         </div>
+
+        {props.isAdmin && retryTraceSummary.total > 0 && (
+          <RetryTrace summary={retryTraceSummary} />
+        )}
 
         {/* Request conversion (admin only, not for refund) */}
         {showConversion && (

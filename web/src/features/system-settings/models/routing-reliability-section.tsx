@@ -17,12 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { InformationCircleIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import { useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
 
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Form,
   FormControl,
@@ -44,6 +47,12 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
 
 import {
@@ -56,6 +65,13 @@ import { SettingsSection } from '../components/settings-section'
 import { useResetForm } from '../hooks/use-reset-form'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
+import {
+  createRetrySettingSchema,
+  createSafeNonNegativeIntegerSchema,
+  type RetryChannelStrategy,
+  type RetryDelayStrategy,
+  type RetryExhaustedAction,
+} from './retry-setting-validation'
 
 const numericString = z.string().refine((value) => {
   const trimmed = value.trim()
@@ -66,53 +82,61 @@ const numericString = z.string().refine((value) => {
 const channelTestModes = ['scheduled_all', 'passive_recovery'] as const
 type ChannelTestMode = (typeof channelTestModes)[number]
 
-const routingReliabilitySchema = z
-  .object({
-    RetryTimes: z.coerce.number().min(0).max(10),
-    ChannelDisableThreshold: numericString,
-    AutomaticDisableChannelEnabled: z.boolean(),
-    AutoDisableTolerance: z.coerce.number().int().min(0).max(999),
-    AutomaticEnableChannelEnabled: z.boolean(),
-    AutomaticDisableKeywords: z.string(),
-    AutomaticDisableStatusCodes: z.string(),
-    AutomaticRetryStatusCodes: z.string(),
-    monitor_setting: z.object({
-      auto_test_channel_enabled: z.boolean(),
-      auto_test_channel_minutes: z.coerce
-        .number()
-        .int()
-        .min(1, 'Interval must be at least 1 minute'),
-      channel_test_mode: z.enum(channelTestModes),
-      zero_token_as_failure: z.boolean(),
-    }),
-  })
-  .superRefine((values, ctx) => {
-    const disableParsed = parseHttpStatusCodeRules(
-      values.AutomaticDisableStatusCodes
-    )
-    if (!disableParsed.ok) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['AutomaticDisableStatusCodes'],
-        message: `Invalid status code rules: ${disableParsed.invalidTokens.join(
-          ', '
-        )}`,
-      })
-    }
+const createRoutingReliabilitySchema = (
+  translateValidationMessage: (key: string) => string
+) =>
+  z
+    .object({
+      RetryTimes: createSafeNonNegativeIntegerSchema(
+        translateValidationMessage
+      ),
+      ChannelDisableThreshold: numericString,
+      AutomaticDisableChannelEnabled: z.boolean(),
+      AutoDisableTolerance: z.coerce.number().int().min(0).max(999),
+      AutomaticEnableChannelEnabled: z.boolean(),
+      AutomaticDisableKeywords: z.string(),
+      AutomaticDisableStatusCodes: z.string(),
+      AutomaticRetryStatusCodes: z.string(),
+      retry_setting: createRetrySettingSchema(translateValidationMessage),
+      monitor_setting: z.object({
+        auto_test_channel_enabled: z.boolean(),
+        auto_test_channel_minutes: z.coerce
+          .number()
+          .int()
+          .min(1, 'Interval must be at least 1 minute'),
+        channel_test_mode: z.enum(channelTestModes),
+        zero_token_as_failure: z.boolean(),
+      }),
+    })
+    .superRefine((values, ctx) => {
+      const disableParsed = parseHttpStatusCodeRules(
+        values.AutomaticDisableStatusCodes
+      )
+      if (!disableParsed.ok) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['AutomaticDisableStatusCodes'],
+          message: `Invalid status code rules: ${disableParsed.invalidTokens.join(
+            ', '
+          )}`,
+        })
+      }
 
-    const retryParsed = parseHttpStatusCodeRules(
-      values.AutomaticRetryStatusCodes
-    )
-    if (!retryParsed.ok) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['AutomaticRetryStatusCodes'],
-        message: `Invalid status code rules: ${retryParsed.invalidTokens.join(
-          ', '
-        )}`,
-      })
-    }
-  })
+      const retryParsed = parseHttpStatusCodeRules(
+        values.AutomaticRetryStatusCodes
+      )
+      if (!retryParsed.ok) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['AutomaticRetryStatusCodes'],
+          message: `Invalid status code rules: ${retryParsed.invalidTokens.join(
+            ', '
+          )}`,
+        })
+      }
+    })
+
+const routingReliabilitySchema = createRoutingReliabilitySchema((key) => key)
 
 type RoutingReliabilityFormValues = z.output<typeof routingReliabilitySchema>
 type RoutingReliabilityFormInput = z.input<typeof routingReliabilitySchema>
@@ -127,6 +151,18 @@ type RoutingReliabilitySectionProps = {
     AutomaticDisableKeywords: string
     AutomaticDisableStatusCodes: string
     AutomaticRetryStatusCodes: string
+    'retry_setting.unlimited': boolean
+    'retry_setting.time_budget_seconds': number
+    'retry_setting.delay_strategy': RetryDelayStrategy
+    'retry_setting.fixed_delay_milliseconds': number
+    'retry_setting.exponential_base_delay_milliseconds': number
+    'retry_setting.exponential_max_delay_milliseconds': number
+    'retry_setting.jitter_percent': number
+    'retry_setting.respect_retry_after': boolean
+    'retry_setting.channel_strategy': RetryChannelStrategy
+    'retry_setting.exhausted_action': RetryExhaustedAction
+    'retry_setting.try_other_keys': boolean
+    'retry_setting.unlimited_task_retries': boolean
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
@@ -147,6 +183,18 @@ type NormalizedRoutingReliabilityValues = {
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
   AutomaticRetryStatusCodes: string
+  'retry_setting.unlimited': boolean
+  'retry_setting.time_budget_seconds': number
+  'retry_setting.delay_strategy': RetryDelayStrategy
+  'retry_setting.fixed_delay_milliseconds': number
+  'retry_setting.exponential_base_delay_milliseconds': number
+  'retry_setting.exponential_max_delay_milliseconds': number
+  'retry_setting.jitter_percent': number
+  'retry_setting.respect_retry_after': boolean
+  'retry_setting.channel_strategy': RetryChannelStrategy
+  'retry_setting.exhausted_action': RetryExhaustedAction
+  'retry_setting.try_other_keys': boolean
+  'retry_setting.unlimited_task_retries': boolean
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
@@ -157,10 +205,22 @@ function normalizeChannelTestMode(value?: string): ChannelTestMode {
   return value === 'passive_recovery' ? 'passive_recovery' : 'scheduled_all'
 }
 
+function normalizeRetryDelayStrategy(value?: string): RetryDelayStrategy {
+  return value === 'fixed' || value === 'exponential' ? value : 'immediate'
+}
+
+function normalizeRetryChannelStrategy(value?: string): RetryChannelStrategy {
+  return value === 'same_priority' ? 'same_priority' : 'legacy'
+}
+
+function normalizeRetryExhaustedAction(value?: string): RetryExhaustedAction {
+  return value === 'cycle' ? 'cycle' : 'stop'
+}
+
 const buildFormDefaults = (
   defaults: RoutingReliabilitySectionProps['defaultValues']
 ): RoutingReliabilityFormInput => ({
-  RetryTimes: defaults.RetryTimes ?? 0,
+  RetryTimes: defaults.RetryTimes ?? 10,
   ChannelDisableThreshold: defaults.ChannelDisableThreshold ?? '',
   AutomaticDisableChannelEnabled: defaults.AutomaticDisableChannelEnabled,
   AutoDisableTolerance: defaults.AutoDisableTolerance ?? 0,
@@ -170,6 +230,30 @@ const buildFormDefaults = (
   ),
   AutomaticDisableStatusCodes: defaults.AutomaticDisableStatusCodes ?? '',
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
+  retry_setting: {
+    unlimited: defaults['retry_setting.unlimited'] ?? false,
+    time_budget_seconds: defaults['retry_setting.time_budget_seconds'] ?? 0,
+    delay_strategy: normalizeRetryDelayStrategy(
+      defaults['retry_setting.delay_strategy']
+    ),
+    fixed_delay_milliseconds:
+      defaults['retry_setting.fixed_delay_milliseconds'] ?? 0,
+    exponential_base_delay_milliseconds:
+      defaults['retry_setting.exponential_base_delay_milliseconds'] ?? 250,
+    exponential_max_delay_milliseconds:
+      defaults['retry_setting.exponential_max_delay_milliseconds'] ?? 10000,
+    jitter_percent: defaults['retry_setting.jitter_percent'] ?? 20,
+    respect_retry_after: defaults['retry_setting.respect_retry_after'] ?? false,
+    channel_strategy: normalizeRetryChannelStrategy(
+      defaults['retry_setting.channel_strategy']
+    ),
+    exhausted_action: normalizeRetryExhaustedAction(
+      defaults['retry_setting.exhausted_action']
+    ),
+    try_other_keys: defaults['retry_setting.try_other_keys'] ?? false,
+    unlimited_task_retries:
+      defaults['retry_setting.unlimited_task_retries'] ?? false,
+  },
   monitor_setting: {
     auto_test_channel_enabled:
       defaults['monitor_setting.auto_test_channel_enabled'],
@@ -186,7 +270,7 @@ const buildFormDefaults = (
 const normalizeDefaults = (
   defaults: RoutingReliabilitySectionProps['defaultValues']
 ): NormalizedRoutingReliabilityValues => ({
-  RetryTimes: defaults.RetryTimes ?? 0,
+  RetryTimes: defaults.RetryTimes ?? 10,
   ChannelDisableThreshold: (defaults.ChannelDisableThreshold ?? '').trim(),
   AutomaticDisableChannelEnabled: defaults.AutomaticDisableChannelEnabled,
   AutoDisableTolerance: defaults.AutoDisableTolerance ?? 0,
@@ -200,6 +284,32 @@ const normalizeDefaults = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticRetryStatusCodes ?? ''
   ).normalized,
+  'retry_setting.unlimited': defaults['retry_setting.unlimited'] ?? false,
+  'retry_setting.time_budget_seconds':
+    defaults['retry_setting.time_budget_seconds'] ?? 0,
+  'retry_setting.delay_strategy': normalizeRetryDelayStrategy(
+    defaults['retry_setting.delay_strategy']
+  ),
+  'retry_setting.fixed_delay_milliseconds':
+    defaults['retry_setting.fixed_delay_milliseconds'] ?? 0,
+  'retry_setting.exponential_base_delay_milliseconds':
+    defaults['retry_setting.exponential_base_delay_milliseconds'] ?? 250,
+  'retry_setting.exponential_max_delay_milliseconds':
+    defaults['retry_setting.exponential_max_delay_milliseconds'] ?? 10000,
+  'retry_setting.jitter_percent':
+    defaults['retry_setting.jitter_percent'] ?? 20,
+  'retry_setting.respect_retry_after':
+    defaults['retry_setting.respect_retry_after'] ?? false,
+  'retry_setting.channel_strategy': normalizeRetryChannelStrategy(
+    defaults['retry_setting.channel_strategy']
+  ),
+  'retry_setting.exhausted_action': normalizeRetryExhaustedAction(
+    defaults['retry_setting.exhausted_action']
+  ),
+  'retry_setting.try_other_keys':
+    defaults['retry_setting.try_other_keys'] ?? false,
+  'retry_setting.unlimited_task_retries':
+    defaults['retry_setting.unlimited_task_retries'] ?? false,
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -228,6 +338,22 @@ const normalizeFormValues = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     values.AutomaticRetryStatusCodes
   ).normalized,
+  'retry_setting.unlimited': values.retry_setting.unlimited,
+  'retry_setting.time_budget_seconds': values.retry_setting.time_budget_seconds,
+  'retry_setting.delay_strategy': values.retry_setting.delay_strategy,
+  'retry_setting.fixed_delay_milliseconds':
+    values.retry_setting.fixed_delay_milliseconds,
+  'retry_setting.exponential_base_delay_milliseconds':
+    values.retry_setting.exponential_base_delay_milliseconds,
+  'retry_setting.exponential_max_delay_milliseconds':
+    values.retry_setting.exponential_max_delay_milliseconds,
+  'retry_setting.jitter_percent': values.retry_setting.jitter_percent,
+  'retry_setting.respect_retry_after': values.retry_setting.respect_retry_after,
+  'retry_setting.channel_strategy': values.retry_setting.channel_strategy,
+  'retry_setting.exhausted_action': values.retry_setting.exhausted_action,
+  'retry_setting.try_other_keys': values.retry_setting.try_other_keys,
+  'retry_setting.unlimited_task_retries':
+    values.retry_setting.unlimited_task_retries,
   'monitor_setting.auto_test_channel_enabled':
     values.monitor_setting.auto_test_channel_enabled,
   'monitor_setting.auto_test_channel_minutes':
@@ -250,13 +376,17 @@ export function RoutingReliabilitySection({
     () => buildFormDefaults(defaultValues),
     [defaultValues]
   )
+  const localizedSchema = useMemo(
+    () => createRoutingReliabilitySchema((key) => t(key)),
+    [t]
+  )
 
   const form = useForm<
     RoutingReliabilityFormInput,
     unknown,
     RoutingReliabilityFormValues
   >({
-    resolver: zodResolver(routingReliabilitySchema),
+    resolver: zodResolver(localizedSchema),
     defaultValues: formDefaults,
   })
 
@@ -265,6 +395,11 @@ export function RoutingReliabilitySection({
   const autoDisableStatusCodes = form.watch('AutomaticDisableStatusCodes')
   const autoRetryStatusCodes = form.watch('AutomaticRetryStatusCodes')
   const channelTestMode = form.watch('monitor_setting.channel_test_mode')
+  const retryTimes = form.watch('RetryTimes')
+  const retryUnlimited = form.watch('retry_setting.unlimited')
+  const retryTimeBudget = form.watch('retry_setting.time_budget_seconds')
+  const retryDelayStrategy = form.watch('retry_setting.delay_strategy')
+  const retryChannelStrategy = form.watch('retry_setting.channel_strategy')
   const autoDisableParsed = useMemo(
     () => parseHttpStatusCodeRules(autoDisableStatusCodes),
     [autoDisableStatusCodes]
@@ -307,30 +442,386 @@ export function RoutingReliabilitySection({
 
           <div className='flex min-w-0 flex-col gap-4'>
             <div className='flex flex-col gap-1'>
-              <h4 className='text-sm font-medium'>{t('Request retry')}</h4>
+              <h4 className='text-sm font-medium'>{t('Request failover')}</h4>
             </div>
-            <div className='grid min-w-0 gap-6 xl:grid-cols-[minmax(12rem,24rem)_minmax(0,1fr)]'>
+            <div className='grid min-w-0 gap-6 lg:grid-cols-2'>
               <FormField
                 control={form.control}
-                name='RetryTimes'
+                name='retry_setting.unlimited'
+                render={({ field }) => (
+                  <SettingsSwitchItem className='lg:col-span-2'>
+                    <SettingsSwitchContent>
+                      <FormLabel>{t('Unlimited retries')}</FormLabel>
+                      <FormDescription>
+                        {t(
+                          'Keep retrying eligible requests until the time budget or candidate policy stops the chain.'
+                        )}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+
+              {!retryUnlimited && (
+                <FormField
+                  control={form.control}
+                  name='RetryTimes'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Retry Times')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type='number'
+                          min='0'
+                          step='1'
+                          {...safeNumberFieldProps(field)}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t('Extra attempts after the initial request')}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              <FormField
+                control={form.control}
+                name='retry_setting.time_budget_seconds'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Retry Times')}</FormLabel>
+                    <FormLabel>{t('Retry time budget (seconds)')}</FormLabel>
                     <FormControl>
                       <Input
                         type='number'
                         min='0'
-                        max='10'
+                        step='1'
                         {...safeNumberFieldProps(field)}
                       />
                     </FormControl>
                     <FormDescription>
-                      {t('Number of times to retry failed requests (0-10)')}
+                      {t('0 means no time limit')}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
+              <FormField
+                control={form.control}
+                name='retry_setting.delay_strategy'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Retry delay')}</FormLabel>
+                    <Select
+                      items={[
+                        { value: 'immediate', label: t('Immediate') },
+                        { value: 'fixed', label: t('Fixed interval') },
+                        {
+                          value: 'exponential',
+                          label: t('Exponential backoff'),
+                        },
+                      ]}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='immediate'>
+                            {t('Immediate')}
+                          </SelectItem>
+                          <SelectItem value='fixed'>
+                            {t('Fixed interval')}
+                          </SelectItem>
+                          <SelectItem value='exponential'>
+                            {t('Exponential backoff')}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      {t('Delay applied before each eligible retry')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {retryDelayStrategy === 'fixed' && (
+                <FormField
+                  control={form.control}
+                  name='retry_setting.fixed_delay_milliseconds'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Fixed delay (milliseconds)')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type='number'
+                          min='0'
+                          step='1'
+                          {...safeNumberFieldProps(field)}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t('Wait this long before every retry')}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {retryDelayStrategy === 'exponential' && (
+                <>
+                  <FormField
+                    control={form.control}
+                    name='retry_setting.exponential_base_delay_milliseconds'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Base delay (milliseconds)')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min='0'
+                            step='1'
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t('Starting delay for exponential backoff')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='retry_setting.exponential_max_delay_milliseconds'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {t('Maximum delay (milliseconds)')}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min='0'
+                            step='1'
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t('Caps each exponential delay; 0 means no cap')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='retry_setting.jitter_percent'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Jitter (percent)')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min='0'
+                            step='any'
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Randomizes delays to spread simultaneous retries'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </>
+              )}
+
+              <FormField
+                control={form.control}
+                name='retry_setting.respect_retry_after'
+                render={({ field }) => (
+                  <SettingsSwitchItem className='lg:col-span-2'>
+                    <SettingsSwitchContent>
+                      <FormLabel>{t('Respect Retry-After')}</FormLabel>
+                      <FormDescription>
+                        {t(
+                          'Use a longer upstream Retry-After delay when provided'
+                        )}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='retry_setting.channel_strategy'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Channel retry strategy')}</FormLabel>
+                    <Select
+                      items={[
+                        { value: 'legacy', label: t('Priority fallback') },
+                        {
+                          value: 'same_priority',
+                          label: t('Same-priority first'),
+                        },
+                      ]}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='legacy'>
+                            {t('Priority fallback')}
+                          </SelectItem>
+                          <SelectItem value='same_priority'>
+                            {t('Same-priority first')}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      {field.value === 'legacy'
+                        ? t(
+                            'Each retry moves to the next priority; the lowest priority continues weighted selection.'
+                          )
+                        : t(
+                            'Try unused candidates at the current priority before moving lower.'
+                          )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {retryChannelStrategy === 'same_priority' && (
+                <FormField
+                  control={form.control}
+                  name='retry_setting.exhausted_action'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        {t('When candidates are exhausted')}
+                      </FormLabel>
+                      <Select
+                        items={[
+                          { value: 'stop', label: t('Stop retrying') },
+                          { value: 'cycle', label: t('Start a new round') },
+                        ]}
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            <SelectItem value='stop'>
+                              {t('Stop retrying')}
+                            </SelectItem>
+                            <SelectItem value='cycle'>
+                              {t('Start a new round')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        {t(
+                          'New rounds keep the current retry-count mode and time budget; consumed attempts and elapsed budget are not reset.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              <FormField
+                control={form.control}
+                name='retry_setting.try_other_keys'
+                render={({ field }) => (
+                  <SettingsSwitchItem className='lg:col-span-2'>
+                    <SettingsSwitchContent>
+                      <FormLabel>
+                        {t('Try other keys in the channel')}
+                      </FormLabel>
+                      <FormDescription>
+                        {t(
+                          'When disabled, each channel selection uses one key. When enabled, other available keys in that channel can be retried as channel and key-index candidates.'
+                        )}
+                      </FormDescription>
+                    </SettingsSwitchContent>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </SettingsSwitchItem>
+                )}
+              />
+
+              {retryUnlimited && (
+                <FormField
+                  control={form.control}
+                  name='retry_setting.unlimited_task_retries'
+                  render={({ field }) => (
+                    <SettingsSwitchItem className='lg:col-span-2'>
+                      <SettingsSwitchContent>
+                        <FormLabel>
+                          {t('Allow unlimited async task retries')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Advanced: repeated task submission can create duplicate work and charges.'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </SettingsSwitchItem>
+                  )}
+                />
+              )}
 
               <FormField
                 control={form.control}
@@ -361,7 +852,84 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
+
+              {retryUnlimited && retryTimeBudget === 0 && (
+                <Alert className='lg:col-span-2'>
+                  <AlertDescription>
+                    {t(
+                      'Unlimited retries without a time budget can keep requests open indefinitely.'
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {retryDelayStrategy === 'immediate' &&
+                (retryUnlimited || Number(retryTimes) > 10) && (
+                  <Alert className='lg:col-span-2'>
+                    <AlertDescription>
+                      {t(
+                        'Immediate high-volume retries can increase upstream load and duplicate charges.'
+                      )}
+                    </AlertDescription>
+                  </Alert>
+                )}
             </div>
+          </div>
+
+          <Separator />
+
+          <div className='flex min-w-0 flex-col gap-4'>
+            <div className='flex flex-col gap-1'>
+              <h4 className='text-sm font-medium'>
+                {t('Upstream anomaly detection')}
+              </h4>
+            </div>
+            <FormField
+              control={form.control}
+              name='monitor_setting.zero_token_as_failure'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <div className='flex min-w-0 items-center gap-1.5'>
+                      <FormLabel>{t('Anomalous response detection')}</FormLabel>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger
+                            type='button'
+                            aria-label={t('More information')}
+                            className='text-muted-foreground hover:text-foreground inline-flex size-5 shrink-0 items-center justify-center'
+                          >
+                            <HugeiconsIcon
+                              icon={InformationCircleIcon}
+                              className='size-4'
+                              aria-hidden='true'
+                            />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>
+                              {t(
+                                'Empty direct OpenAI/Codex Responses streams enter retry before meaningful output only when a retry opportunity and an available candidate remain. Streams already sending output and client cancellations are not retried.'
+                              )}
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
+                    <FormDescription>
+                      {t(
+                        'Missing usage or zero total tokens is treated as a channel failure.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
           </div>
 
           <Separator />
@@ -509,31 +1077,6 @@ export function RoutingReliabilitySection({
                       <FormLabel>{t('Disable on failure')}</FormLabel>
                       <FormDescription>
                         {t('Automatically disable channels when tests fail')}
-                      </FormDescription>
-                    </SettingsSwitchContent>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                  </SettingsSwitchItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='monitor_setting.zero_token_as_failure'
-                render={({ field }) => (
-                  <SettingsSwitchItem>
-                    <SettingsSwitchContent>
-                      <FormLabel>
-                        {t('Count zero-token responses as failures')}
-                      </FormLabel>
-                      <FormDescription>
-                        {t(
-                          'When a text request or channel test has no usage or zero total tokens, count it toward the consecutive-failure threshold and auto-disable rules. Empty direct OpenAI/Codex Responses streams are treated as failures before output starts and enter the existing retry flow when retry attempts and another channel are available; streams already sending output are not retried.'
-                        )}
                       </FormDescription>
                     </SettingsSwitchContent>
                     <FormControl>

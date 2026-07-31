@@ -233,6 +233,18 @@ export type ModelSettings = {
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
   AutomaticRetryStatusCodes: string
+  'retry_setting.unlimited': boolean
+  'retry_setting.time_budget_seconds': number
+  'retry_setting.delay_strategy': 'immediate' | 'fixed' | 'exponential'
+  'retry_setting.fixed_delay_milliseconds': number
+  'retry_setting.exponential_base_delay_milliseconds': number
+  'retry_setting.exponential_max_delay_milliseconds': number
+  'retry_setting.jitter_percent': number
+  'retry_setting.respect_retry_after': boolean
+  'retry_setting.channel_strategy': 'legacy' | 'same_priority'
+  'retry_setting.exhausted_action': 'stop' | 'cycle'
+  'retry_setting.try_other_keys': boolean
+  'retry_setting.unlimited_task_retries': boolean
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': 'scheduled_all' | 'passive_recovery'

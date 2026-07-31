@@ -89,14 +89,34 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err                    error
+	RelayError             any
+	skipRetry              bool
+	recordErrorLog         *bool
+	errorType              ErrorType
+	errorCode              ErrorCode
+	StatusCode             int
+	Metadata               json.RawMessage
+	retryAfterMilliseconds int64
+}
+
+// SetRetryAfterMilliseconds stores parsed retry timing without retaining the
+// upstream header value. The host module decides whether to honor it.
+func (e *NewAPIError) SetRetryAfterMilliseconds(milliseconds int64) {
+	if e == nil {
+		return
+	}
+	if milliseconds < 0 {
+		milliseconds = 0
+	}
+	e.retryAfterMilliseconds = milliseconds
+}
+
+func (e *NewAPIError) GetRetryAfterMilliseconds() int64 {
+	if e == nil {
+		return 0
+	}
+	return e.retryAfterMilliseconds
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.

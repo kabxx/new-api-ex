@@ -92,6 +92,20 @@ export interface ChannelAffinityInfo {
   using_group?: string
 }
 
+export interface RetryTraceEntry {
+  attempt?: number
+  channel_id?: number
+  channel_name?: string
+  priority?: number
+  multi_key_index?: number
+  duration_ms?: number
+  status_code?: number
+  error_code?: string
+  delay_ms?: number
+  decision?: string
+  outcome?: string
+}
+
 export const USAGE_BILLING_PATH = {
   LOCAL: 'local',
   UPSTREAM: 'upstream',
@@ -116,7 +130,12 @@ export interface LogOtherData {
   admin_info?: {
     is_multi_key?: boolean
     multi_key_index?: number
-    use_channel?: number[]
+    use_channel?: Array<number | string>
+    use_channel_total?: number
+    use_channel_omitted?: number
+    retry_trace?: RetryTraceEntry[]
+    retry_trace_total?: number
+    retry_trace_omitted?: number
     local_count_tokens?: boolean
     usage_billing_path?: UsageBillingPath | string
     channel_affinity?: ChannelAffinityInfo

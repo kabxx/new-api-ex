@@ -1,7 +1,12 @@
 package config
 
 import (
+	"fmt"
+	"strconv"
+	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 type testConfigWithMap struct {
@@ -92,5 +97,56 @@ func TestUpdateConfigFromMap_ScalarFieldsUnchanged(t *testing.T) {
 	// modes was not in configMap, should remain unchanged
 	if cfg.Modes["m"] != "v" {
 		t.Errorf("Modes should be unchanged, got %v", cfg.Modes)
+	}
+}
+
+type atomicPairConfig struct {
+	Left  int `json:"left"`
+	Right int `json:"right"`
+}
+
+func TestConfigManagerUpdateAndCopyPublishOneSnapshot(t *testing.T) {
+	manager := NewConfigManager()
+	manager.Register("pair", &atomicPairConfig{Left: 1, Right: 1})
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errorsFound := make(chan string, 8)
+	for reader := 0; reader < 4; reader++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for iteration := 0; iteration < 200; iteration++ {
+				var snapshot atomicPairConfig
+				if !manager.CopyInto("pair", &snapshot) {
+					errorsFound <- "copy failed"
+					return
+				}
+				if snapshot.Left != snapshot.Right {
+					errorsFound <- fmt.Sprintf("mixed snapshot: %+v", snapshot)
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for iteration := 0; iteration < 200; iteration++ {
+			value := 1 + iteration%2
+			encoded := strconv.Itoa(value)
+			if !manager.Update("pair", map[string]string{"left": encoded, "right": encoded}) {
+				errorsFound <- "update failed"
+				return
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
+	close(errorsFound)
+	for message := range errorsFound {
+		assert.Empty(t, message)
 	}
 }

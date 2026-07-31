@@ -38,6 +38,42 @@ func (cm *ConfigManager) Get(name string) interface{} {
 	return cm.configs[name]
 }
 
+// Update applies all fields for one registered config while holding the
+// manager lock. Readers using CopyInto observe either the old or new snapshot.
+func (cm *ConfigManager) Update(name string, values map[string]string) bool {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	config, ok := cm.configs[name]
+	if !ok {
+		return false
+	}
+	_ = updateConfigFromMap(config, values)
+	return true
+}
+
+// CopyInto copies one registered struct into target under the manager read
+// lock. target must be a pointer to the same struct type as the registration.
+func (cm *ConfigManager) CopyInto(name string, target interface{}) bool {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
+	source, ok := cm.configs[name]
+	if !ok || target == nil {
+		return false
+	}
+	sourceValue := reflect.ValueOf(source)
+	targetValue := reflect.ValueOf(target)
+	if sourceValue.Kind() != reflect.Ptr || targetValue.Kind() != reflect.Ptr || sourceValue.IsNil() || targetValue.IsNil() {
+		return false
+	}
+	sourceValue = sourceValue.Elem()
+	targetValue = targetValue.Elem()
+	if !targetValue.CanSet() || sourceValue.Type() != targetValue.Type() {
+		return false
+	}
+	targetValue.Set(sourceValue)
+	return true
+}
+
 // LoadFromDB 从数据库加载配置
 func (cm *ConfigManager) LoadFromDB(options map[string]string) error {
 	cm.mutex.Lock()

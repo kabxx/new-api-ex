@@ -8,12 +8,35 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestParseRetryAfterSecondsAndHTTPDate(t *testing.T) {
+	now := time.Date(2026, time.July, 31, 0, 0, 0, 0, time.UTC)
+	assert.Equal(t, int64(3000), ParseRetryAfter("3", now))
+	assert.Equal(t, int64(5000), ParseRetryAfter(now.Add(5*time.Second).Format(http.TimeFormat), now))
+	assert.Zero(t, ParseRetryAfter("invalid", now))
+	assert.Zero(t, ParseRetryAfter("-1", now))
+}
+
+func TestRelayErrorHandlerStoresParsedRetryAfter(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"3"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"busy","type":"rate_limit","code":"rate_limit"}}`)),
+	}
+
+	apiErr := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, apiErr)
+	assert.Equal(t, int64(3000), apiErr.GetRetryAfterMilliseconds())
+}
 
 func TestResetStatusCode(t *testing.T) {
 	t.Parallel()
