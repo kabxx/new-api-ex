@@ -570,6 +570,11 @@ func (channel *Channel) Insert() error {
 func (channel *Channel) Update() error {
 	// If this is a multi-key channel, recalculate MultiKeySize based on the current key list to avoid inconsistency after editing keys
 	if channel.ChannelInfo.IsMultiKey {
+		if channel.Status == 0 {
+			if existing, err := GetChannelById(channel.Id, false); err == nil {
+				channel.Status = existing.Status
+			}
+		}
 		var keyStr string
 		if channel.Key != "" {
 			keyStr = channel.Key
@@ -603,6 +608,11 @@ func (channel *Channel) Update() error {
 				if idx >= channel.ChannelInfo.MultiKeySize {
 					delete(channel.ChannelInfo.MultiKeyStatusList, idx)
 				}
+			}
+		}
+		if channel.Status != common.ChannelStatusManuallyDisabled {
+			if !hasEnabledMultiKey(keys, channel.ChannelInfo.MultiKeyStatusList) {
+				channel.Status = common.ChannelStatusAutoDisabled
 			}
 		}
 	}

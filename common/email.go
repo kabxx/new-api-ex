@@ -4,10 +4,16 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/smtp"
 	"slices"
 	"strings"
 	"time"
+)
+
+const (
+	smtpConnectTimeout = 15 * time.Second
+	smtpSessionTimeout = 30 * time.Second
 )
 
 func generateMessageID() (string, error) {
@@ -42,21 +48,37 @@ func smtpTLSConfig() *tls.Config {
 }
 
 func newSMTPClient(addr string) (*smtp.Client, error) {
+	return newSMTPClientWithTimeouts(addr, smtpConnectTimeout, smtpSessionTimeout)
+}
+
+func newSMTPClientWithTimeouts(addr string, connectTimeout, sessionTimeout time.Duration) (*smtp.Client, error) {
+	dialer := net.Dialer{Timeout: connectTimeout}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(sessionTimeout)); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
 	if SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled) {
-		conn, err := tls.Dial("tcp", addr, smtpTLSConfig())
-		if err != nil {
+		tlsConn := tls.Client(conn, smtpTLSConfig())
+		if err := tlsConn.Handshake(); err != nil {
+			_ = conn.Close()
 			return nil, err
 		}
-		client, err := smtp.NewClient(conn, SMTPServer)
+		client, err := smtp.NewClient(tlsConn, SMTPServer)
 		if err != nil {
-			_ = conn.Close()
+			_ = tlsConn.Close()
 			return nil, err
 		}
 		return client, nil
 	}
 
-	client, err := smtp.Dial(addr)
+	client, err := smtp.NewClient(conn, SMTPServer)
 	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 
@@ -130,7 +152,7 @@ func SendEmail(subject string, receiver string, content string) error {
 	}
 	err = client.Quit()
 	if err != nil {
-		SysError(fmt.Sprintf("failed to send email to %s: %v", receiver, err))
+		SysError(fmt.Sprintf("failed to finish SMTP session: %v", err))
 	}
 	return err
 }

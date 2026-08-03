@@ -14,6 +14,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
@@ -24,14 +25,15 @@ import (
 )
 
 func TestShouldTreatZeroTokenAsFailureHonorsSettingAndUsage(t *testing.T) {
-	setting := operation_setting.GetMonitorSetting()
-	original := *setting
-	t.Cleanup(func() { *setting = original })
+	original := operation_setting.GetMonitorSettingSnapshot().ZeroTokenAsFailure
+	t.Cleanup(func() {
+		require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": common.Interface2String(original)}))
+	})
 
-	setting.ZeroTokenAsFailure = false
+	require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": "false"}))
 	require.False(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{}))
 
-	setting.ZeroTokenAsFailure = true
+	require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": "true"}))
 	require.True(t, ShouldTreatZeroTokenAsFailure(nil))
 	require.True(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{}))
 	require.True(t, ShouldTreatZeroTokenAsFailure(&dto.Usage{TotalTokens: -1}))
@@ -60,10 +62,11 @@ func TestSupportsZeroTokenFailureCheckExcludesNonTextUsagePaths(t *testing.T) {
 }
 
 func TestShouldRecordZeroTokenFailureExcludesCanceledRequest(t *testing.T) {
-	setting := operation_setting.GetMonitorSetting()
-	original := *setting
-	setting.ZeroTokenAsFailure = true
-	t.Cleanup(func() { *setting = original })
+	original := operation_setting.GetMonitorSettingSnapshot().ZeroTokenAsFailure
+	require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": "true"}))
+	t.Cleanup(func() {
+		require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": common.Interface2String(original)}))
+	})
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)

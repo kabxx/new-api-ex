@@ -5281,6 +5281,20 @@
     "Enter a non-negative finite number": "請輸入非負有限數值",
     "{{omitted}} attempts omitted ({{total}} total)": "已省略 {{omitted}} 次嘗試（共 {{total}} 次）",
     "{{omitted}} channel selections omitted ({{total}} total)": "已省略 {{omitted}} 次渠道選擇（共 {{total}} 次）",
-    "Missing usage or zero total tokens is treated as a channel failure.": "缺少 usage 或總 token 為 0 時，按渠道失敗處理。"
+    "Missing usage or zero total tokens is treated as a channel failure.": "缺少 usage 或總 token 為 0 時，按渠道失敗處理。",
+    "Availability email notifications": "可用性電郵通知",
+    "Email on availability changes": "可用性變更時傳送電郵",
+    "Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.": "當整個系統在至少一個已啟用渠道與沒有已啟用渠道之間變化時傳送通知。健康檢查、自動停用或恢復和人工啟停造成的變化均包含在內；狀態不變時不會重複傳送。",
+    "Notification recipients": "通知收件人",
+    "{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.": "已識別 {{count}} 個有效收件人。SMTP 沿用「系統設定 -> 維運 -> 電郵」中的設定。",
+    "{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.": "已識別 {{valid}} 個有效收件人，另有 {{invalid}} 個地址無效。SMTP 沿用「系統設定 -> 維運 -> 電郵」中的設定。",
+    "Enter valid email addresses separated by commas, semicolons, or new lines": "請輸入有效電郵地址，可使用逗號、分號或換行分隔",
+    "Add at least one notification recipient": "請至少新增一個通知收件人",
+    "Send test email": "傳送測試電郵",
+    "Sending test email...": "正在傳送測試電郵...",
+    "Test email sent to {{count}} recipients": "測試電郵已傳送給 {{count}} 個收件人",
+    "Test email sent to {{sent}} recipients; {{failed}} failed": "已向 {{sent}} 個收件人傳送測試電郵，{{failed}} 個傳送失敗",
+    "Failed to send test email": "測試電郵傳送失敗",
+    "No test emails were sent. Check SMTP configuration and server logs.": "測試電郵均未傳送成功，請檢查 SMTP 設定和服務日誌。"
   }
 }

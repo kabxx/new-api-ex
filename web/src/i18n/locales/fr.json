@@ -5281,6 +5281,20 @@
     "Enter a non-negative finite number": "Saisissez un nombre fini positif ou nul",
     "{{omitted}} attempts omitted ({{total}} total)": "{{omitted}} tentatives omises ({{total}} au total)",
     "{{omitted}} channel selections omitted ({{total}} total)": "{{omitted}} sélections de canal omises ({{total}} au total)",
-    "Missing usage or zero total tokens is treated as a channel failure.": "Une donnée usage absente ou un total de tokens nul est traité comme un échec du canal."
+    "Missing usage or zero total tokens is treated as a channel failure.": "Une donnée usage absente ou un total de tokens nul est traité comme un échec du canal.",
+    "Availability email notifications": "Notifications de disponibilité par e-mail",
+    "Email on availability changes": "Envoyer un e-mail lors des changements de disponibilité",
+    "Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.": "Notifier lorsque l’ensemble du système passe d’au moins un canal activé à aucun canal activé, ou inversement. Les contrôles d’état, la désactivation ou la récupération automatique et les changements manuels sont inclus ; aucun e-mail n’est répété sans changement d’état.",
+    "Notification recipients": "Destinataires des notifications",
+    "{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.": "{{count}} destinataires valides. SMTP se configure dans Paramètres système -> Opérations -> E-mail.",
+    "{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.": "{{valid}} destinataires valides ; {{invalid}} invalides. SMTP se configure dans Paramètres système -> Opérations -> E-mail.",
+    "Enter valid email addresses separated by commas, semicolons, or new lines": "Saisissez des adresses e-mail valides séparées par des virgules, des points-virgules ou des retours à la ligne",
+    "Add at least one notification recipient": "Ajoutez au moins un destinataire de notification",
+    "Send test email": "Envoyer un e-mail de test",
+    "Sending test email...": "Envoi de l’e-mail de test...",
+    "Test email sent to {{count}} recipients": "E-mail de test envoyé à {{count}} destinataires",
+    "Test email sent to {{sent}} recipients; {{failed}} failed": "E-mail de test envoyé à {{sent}} destinataires ; {{failed}} échecs",
+    "Failed to send test email": "Échec de l’envoi de l’e-mail de test",
+    "No test emails were sent. Check SMTP configuration and server logs.": "Aucun e-mail de test n’a été envoyé. Vérifiez la configuration SMTP et les journaux du serveur."
   }
 }

@@ -349,6 +349,8 @@ export function ModelMutateDrawer({
       'monitor_setting.auto_test_channel_minutes': 10,
       'monitor_setting.channel_test_mode': 'scheduled_all',
       'monitor_setting.zero_token_as_failure': false,
+      'monitor_setting.channel_availability_notify_enabled': false,
+      'monitor_setting.channel_availability_notify_recipients': [],
       'channel_affinity_setting.enabled': false,
       'channel_affinity_setting.switch_on_success': true,
       'channel_affinity_setting.keep_on_channel_disabled': false,

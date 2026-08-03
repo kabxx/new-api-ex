@@ -596,7 +596,15 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			common.SysLog("get_channel_null: " + err.Error())
 		}
 		if channel.GetAutoBan() && common.AutomaticDisableChannelEnabled {
-			model.UpdateChannelStatus(midjourneyTask.ChannelId, "", 2, "No available account instance")
+			if model.UpdateChannelStatus(midjourneyTask.ChannelId, "", common.ChannelStatusManuallyDisabled, "No available account instance") {
+				channelName := ""
+				if channel, getErr := model.GetChannelById(midjourneyTask.ChannelId, false); getErr == nil {
+					channelName = channel.Name
+				}
+				if _, notifyErr := service.EvaluateChannelAvailability(service.ChannelAvailabilitySourceOther, []service.ChannelAvailabilityRelatedChannel{{ID: midjourneyTask.ChannelId, Name: channelName}}); notifyErr != nil {
+					common.SysLog("failed to evaluate channel availability after Midjourney channel disable: " + notifyErr.Error())
+				}
+			}
 		}
 	}
 	if midjResponse.Code != 1 && midjResponse.Code != 21 && midjResponse.Code != 22 {

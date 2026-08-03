@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 
 import type {
+  ChannelAvailabilityNotificationTestResponse,
   ConfirmPaymentComplianceResponse,
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
@@ -27,6 +28,7 @@ import type {
   SystemTaskResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
+  UpdateOptionsBulkRequest,
   UpstreamChannelsResponse,
   UpstreamRatiosResponse,
 } from './types'
@@ -38,6 +40,30 @@ export async function getSystemOptions() {
 
 export async function updateSystemOption(request: UpdateOptionRequest) {
   const res = await api.put<UpdateOptionResponse>('/api/option/', request)
+  return res.data
+}
+
+export async function updateSystemOptionsBulk(
+  request: UpdateOptionsBulkRequest
+) {
+  const res = await api.put<UpdateOptionResponse>('/api/option/bulk', request, {
+    skipBusinessError: true,
+    skipErrorHandler: true,
+  })
+  return res.data
+}
+
+export async function sendChannelAvailabilityNotificationTest(
+  recipients: string[]
+) {
+  const res = await api.post<ChannelAvailabilityNotificationTestResponse>(
+    '/api/option/channel-availability-notification/test',
+    { recipients },
+    {
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
   return res.data
 }
 

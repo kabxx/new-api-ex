@@ -323,6 +323,7 @@ func InitResources() error {
 		}
 	}
 	model.InitOptionMap()
+	service.ResumeChannelAvailabilityNotificationEvents()
 
 	// 清理旧的磁盘缓存文件
 	common.CleanupOldCacheFiles()

@@ -13,6 +13,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -45,11 +46,10 @@ func newResponsesStreamTestContext(t *testing.T, body string) (*gin.Context, *ht
 func setZeroTokenFailureForResponsesTest(t *testing.T, enabled bool) {
 	t.Helper()
 
-	setting := operation_setting.GetMonitorSetting()
-	previous := setting.ZeroTokenAsFailure
-	setting.ZeroTokenAsFailure = enabled
+	previous := operation_setting.GetMonitorSettingSnapshot().ZeroTokenAsFailure
+	require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": common.Interface2String(enabled)}))
 	t.Cleanup(func() {
-		setting.ZeroTokenAsFailure = previous
+		require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": common.Interface2String(previous)}))
 	})
 }
 

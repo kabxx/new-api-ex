@@ -17,8 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { InformationCircleIcon } from '@hugeicons/core-free-icons'
+import {
+  MailSend01Icon,
+  InformationCircleIcon,
+} from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import type { AxiosError } from 'axios'
 import { useMemo, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -26,6 +31,7 @@ import { toast } from 'sonner'
 import * as z from 'zod'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import {
   Form,
   FormControl,
@@ -45,6 +51,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -56,6 +63,10 @@ import {
 import { parseHttpStatusCodeRules } from '@/lib/http-status-code-rules'
 
 import {
+  sendChannelAvailabilityNotificationTest,
+  updateSystemOptionsBulk,
+} from '../api'
+import {
   SettingsForm,
   SettingsSwitchContent,
   SettingsSwitchItem,
@@ -63,8 +74,15 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useResetForm } from '../hooks/use-reset-form'
-import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
+import {
+  buildAvailabilityNotificationTestRequest,
+  classifyAvailabilityTestResponse,
+  formatAvailabilityRecipientInput,
+  getAvailabilityRecipientInputState,
+  normalizeAvailabilityNotificationFormValues,
+  normalizeAvailabilityRecipientOption,
+} from './channel-availability-notification'
 import {
   createRetrySettingSchema,
   createSafeNonNegativeIntegerSchema,
@@ -72,6 +90,12 @@ import {
   type RetryDelayStrategy,
   type RetryExhaustedAction,
 } from './retry-setting-validation'
+import {
+  acquireSubmissionGuard,
+  buildChangedOptionPayload,
+  getBulkUpdateOutcome,
+  releaseSubmissionGuard,
+} from './routing-reliability-submit'
 
 const numericString = z.string().refine((value) => {
   const trimmed = value.trim()
@@ -84,8 +108,22 @@ type ChannelTestMode = (typeof channelTestModes)[number]
 
 const createRoutingReliabilitySchema = (
   translateValidationMessage: (key: string) => string
-) =>
-  z
+) => {
+  const invalidRecipientMessage = translateValidationMessage(
+    'Enter valid email addresses separated by commas, semicolons, or new lines'
+  )
+  const recipientInputSchema = z.string().superRefine((value, ctx) => {
+    if (
+      getAvailabilityRecipientInputState(value).invalidRecipients.length > 0
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: invalidRecipientMessage,
+      })
+    }
+  })
+
+  return z
     .object({
       RetryTimes: createSafeNonNegativeIntegerSchema(
         translateValidationMessage
@@ -98,15 +136,34 @@ const createRoutingReliabilitySchema = (
       AutomaticDisableStatusCodes: z.string(),
       AutomaticRetryStatusCodes: z.string(),
       retry_setting: createRetrySettingSchema(translateValidationMessage),
-      monitor_setting: z.object({
-        auto_test_channel_enabled: z.boolean(),
-        auto_test_channel_minutes: z.coerce
-          .number()
-          .int()
-          .min(1, 'Interval must be at least 1 minute'),
-        channel_test_mode: z.enum(channelTestModes),
-        zero_token_as_failure: z.boolean(),
-      }),
+      monitor_setting: z
+        .object({
+          auto_test_channel_enabled: z.boolean(),
+          auto_test_channel_minutes: z.coerce
+            .number()
+            .int()
+            .min(1, 'Interval must be at least 1 minute'),
+          channel_test_mode: z.enum(channelTestModes),
+          zero_token_as_failure: z.boolean(),
+          channel_availability_notify_enabled: z.boolean(),
+          channel_availability_notify_recipients: recipientInputSchema,
+        })
+        .superRefine((values, ctx) => {
+          if (
+            values.channel_availability_notify_enabled &&
+            getAvailabilityRecipientInputState(
+              values.channel_availability_notify_recipients
+            ).recipients.length === 0
+          ) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['channel_availability_notify_recipients'],
+              message: translateValidationMessage(
+                'Add at least one notification recipient'
+              ),
+            })
+          }
+        }),
     })
     .superRefine((values, ctx) => {
       const disableParsed = parseHttpStatusCodeRules(
@@ -135,6 +192,7 @@ const createRoutingReliabilitySchema = (
         })
       }
     })
+}
 
 const routingReliabilitySchema = createRoutingReliabilitySchema((key) => key)
 
@@ -167,6 +225,8 @@ type RoutingReliabilitySectionProps = {
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
     'monitor_setting.zero_token_as_failure': boolean
+    'monitor_setting.channel_availability_notify_enabled': boolean
+    'monitor_setting.channel_availability_notify_recipients': unknown
   }
 }
 
@@ -199,6 +259,8 @@ type NormalizedRoutingReliabilityValues = {
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
   'monitor_setting.zero_token_as_failure': boolean
+  'monitor_setting.channel_availability_notify_enabled': boolean
+  'monitor_setting.channel_availability_notify_recipients': string
 }
 
 function normalizeChannelTestMode(value?: string): ChannelTestMode {
@@ -264,6 +326,11 @@ const buildFormDefaults = (
     ),
     zero_token_as_failure:
       defaults['monitor_setting.zero_token_as_failure'] ?? false,
+    channel_availability_notify_enabled:
+      defaults['monitor_setting.channel_availability_notify_enabled'] ?? false,
+    channel_availability_notify_recipients: formatAvailabilityRecipientInput(
+      defaults['monitor_setting.channel_availability_notify_recipients']
+    ),
   },
 })
 
@@ -319,58 +386,85 @@ const normalizeDefaults = (
   ),
   'monitor_setting.zero_token_as_failure':
     defaults['monitor_setting.zero_token_as_failure'] ?? false,
+  'monitor_setting.channel_availability_notify_enabled':
+    defaults['monitor_setting.channel_availability_notify_enabled'] ?? false,
+  'monitor_setting.channel_availability_notify_recipients': JSON.stringify(
+    normalizeAvailabilityRecipientOption(
+      defaults['monitor_setting.channel_availability_notify_recipients']
+    )
+  ),
 })
 
 const normalizeFormValues = (
   values: RoutingReliabilityFormValues
-): NormalizedRoutingReliabilityValues => ({
-  RetryTimes: values.RetryTimes,
-  ChannelDisableThreshold: values.ChannelDisableThreshold.trim(),
-  AutomaticDisableChannelEnabled: values.AutomaticDisableChannelEnabled,
-  AutoDisableTolerance: values.AutoDisableTolerance,
-  AutomaticEnableChannelEnabled: values.AutomaticEnableChannelEnabled,
-  AutomaticDisableKeywords: normalizeLineEndings(
-    values.AutomaticDisableKeywords
-  ),
-  AutomaticDisableStatusCodes: parseHttpStatusCodeRules(
-    values.AutomaticDisableStatusCodes
-  ).normalized,
-  AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
-    values.AutomaticRetryStatusCodes
-  ).normalized,
-  'retry_setting.unlimited': values.retry_setting.unlimited,
-  'retry_setting.time_budget_seconds': values.retry_setting.time_budget_seconds,
-  'retry_setting.delay_strategy': values.retry_setting.delay_strategy,
-  'retry_setting.fixed_delay_milliseconds':
-    values.retry_setting.fixed_delay_milliseconds,
-  'retry_setting.exponential_base_delay_milliseconds':
-    values.retry_setting.exponential_base_delay_milliseconds,
-  'retry_setting.exponential_max_delay_milliseconds':
-    values.retry_setting.exponential_max_delay_milliseconds,
-  'retry_setting.jitter_percent': values.retry_setting.jitter_percent,
-  'retry_setting.respect_retry_after': values.retry_setting.respect_retry_after,
-  'retry_setting.channel_strategy': values.retry_setting.channel_strategy,
-  'retry_setting.exhausted_action': values.retry_setting.exhausted_action,
-  'retry_setting.try_other_keys': values.retry_setting.try_other_keys,
-  'retry_setting.unlimited_task_retries':
-    values.retry_setting.unlimited_task_retries,
-  'monitor_setting.auto_test_channel_enabled':
-    values.monitor_setting.auto_test_channel_enabled,
-  'monitor_setting.auto_test_channel_minutes':
-    values.monitor_setting.auto_test_channel_minutes,
-  'monitor_setting.channel_test_mode': values.monitor_setting.channel_test_mode,
-  'monitor_setting.zero_token_as_failure':
-    values.monitor_setting.zero_token_as_failure,
-})
+): NormalizedRoutingReliabilityValues => {
+  const availabilityNotification = normalizeAvailabilityNotificationFormValues(
+    values.monitor_setting.channel_availability_notify_enabled,
+    values.monitor_setting.channel_availability_notify_recipients
+  )
+
+  return {
+    RetryTimes: values.RetryTimes,
+    ChannelDisableThreshold: values.ChannelDisableThreshold.trim(),
+    AutomaticDisableChannelEnabled: values.AutomaticDisableChannelEnabled,
+    AutoDisableTolerance: values.AutoDisableTolerance,
+    AutomaticEnableChannelEnabled: values.AutomaticEnableChannelEnabled,
+    AutomaticDisableKeywords: normalizeLineEndings(
+      values.AutomaticDisableKeywords
+    ),
+    AutomaticDisableStatusCodes: parseHttpStatusCodeRules(
+      values.AutomaticDisableStatusCodes
+    ).normalized,
+    AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
+      values.AutomaticRetryStatusCodes
+    ).normalized,
+    'retry_setting.unlimited': values.retry_setting.unlimited,
+    'retry_setting.time_budget_seconds':
+      values.retry_setting.time_budget_seconds,
+    'retry_setting.delay_strategy': values.retry_setting.delay_strategy,
+    'retry_setting.fixed_delay_milliseconds':
+      values.retry_setting.fixed_delay_milliseconds,
+    'retry_setting.exponential_base_delay_milliseconds':
+      values.retry_setting.exponential_base_delay_milliseconds,
+    'retry_setting.exponential_max_delay_milliseconds':
+      values.retry_setting.exponential_max_delay_milliseconds,
+    'retry_setting.jitter_percent': values.retry_setting.jitter_percent,
+    'retry_setting.respect_retry_after':
+      values.retry_setting.respect_retry_after,
+    'retry_setting.channel_strategy': values.retry_setting.channel_strategy,
+    'retry_setting.exhausted_action': values.retry_setting.exhausted_action,
+    'retry_setting.try_other_keys': values.retry_setting.try_other_keys,
+    'retry_setting.unlimited_task_retries':
+      values.retry_setting.unlimited_task_retries,
+    'monitor_setting.auto_test_channel_enabled':
+      values.monitor_setting.auto_test_channel_enabled,
+    'monitor_setting.auto_test_channel_minutes':
+      values.monitor_setting.auto_test_channel_minutes,
+    'monitor_setting.channel_test_mode':
+      values.monitor_setting.channel_test_mode,
+    'monitor_setting.zero_token_as_failure':
+      values.monitor_setting.zero_token_as_failure,
+    'monitor_setting.channel_availability_notify_enabled':
+      availabilityNotification.enabled,
+    'monitor_setting.channel_availability_notify_recipients': JSON.stringify(
+      availabilityNotification.recipients
+    ),
+  }
+}
 
 export function RoutingReliabilitySection({
   defaultValues,
 }: RoutingReliabilitySectionProps) {
   const { t } = useTranslation()
-  const updateOption = useUpdateOption()
+  const queryClient = useQueryClient()
+  const updateOptionsBulk = useMutation({
+    mutationFn: (options: Record<string, string>) =>
+      updateSystemOptionsBulk({ options }),
+  })
   const baselineRef = useRef<NormalizedRoutingReliabilityValues>(
     normalizeDefaults(defaultValues)
   )
+  const submitGuardRef = useRef(false)
 
   const formDefaults = useMemo(
     () => buildFormDefaults(defaultValues),
@@ -400,6 +494,20 @@ export function RoutingReliabilitySection({
   const retryTimeBudget = form.watch('retry_setting.time_budget_seconds')
   const retryDelayStrategy = form.watch('retry_setting.delay_strategy')
   const retryChannelStrategy = form.watch('retry_setting.channel_strategy')
+  const availabilityNotifyEnabled = form.watch(
+    'monitor_setting.channel_availability_notify_enabled'
+  )
+  const availabilityRecipientInput = form.watch(
+    'monitor_setting.channel_availability_notify_recipients'
+  )
+  const availabilityRecipientState = useMemo(
+    () => getAvailabilityRecipientInputState(availabilityRecipientInput),
+    [availabilityRecipientInput]
+  )
+  const availabilityTestRequest = useMemo(
+    () => buildAvailabilityNotificationTestRequest(availabilityRecipientInput),
+    [availabilityRecipientInput]
+  )
   const autoDisableParsed = useMemo(
     () => parseHttpStatusCodeRules(autoDisableStatusCodes),
     [autoDisableStatusCodes]
@@ -409,26 +517,72 @@ export function RoutingReliabilitySection({
     [autoRetryStatusCodes]
   )
 
+  const testAvailabilityNotification = useMutation({
+    mutationFn: ({ recipients }: { recipients: string[] }) =>
+      sendChannelAvailabilityNotificationTest(recipients),
+    onSuccess: (data) => {
+      const feedback = classifyAvailabilityTestResponse(data)
+      if (feedback.kind === 'warning') {
+        toast.warning(
+          t('Test email sent to {{sent}} recipients; {{failed}} failed', {
+            sent: feedback.succeeded,
+            failed: feedback.failed,
+          })
+        )
+        return
+      }
+      if (feedback.kind === 'error') {
+        toast.error(
+          feedback.reason === 'all_failed'
+            ? t(
+                'No test emails were sent. Check SMTP configuration and server logs.'
+              )
+            : feedback.message || t('Failed to send test email')
+        )
+        return
+      }
+      toast.success(
+        t('Test email sent to {{count}} recipients', {
+          count: feedback.succeeded,
+        })
+      )
+    },
+    onError: (error: AxiosError<{ message?: string }>) => {
+      toast.error(
+        error.response?.data?.message || t('Failed to send test email')
+      )
+    },
+  })
+
   const onSubmit = async (values: RoutingReliabilityFormValues) => {
-    const normalized = normalizeFormValues(values)
-    const updates = (
-      Object.keys(normalized) as Array<keyof NormalizedRoutingReliabilityValues>
-    ).filter((key) => normalized[key] !== baselineRef.current[key])
+    if (!acquireSubmissionGuard(submitGuardRef)) return
 
-    if (updates.length === 0) {
-      toast.info(t('No changes to save'))
-      return
+    try {
+      const normalized = normalizeFormValues(values)
+      const options = buildChangedOptionPayload(normalized, baselineRef.current)
+
+      if (Object.keys(options).length === 0) {
+        toast.info(t('No changes to save'))
+        return
+      }
+
+      const response = await updateOptionsBulk.mutateAsync(options)
+      const outcome = getBulkUpdateOutcome(response)
+      if (!outcome.success) {
+        toast.error(outcome.message || t('Failed to update settings'))
+        return
+      }
+      baselineRef.current = normalized
+      await queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      toast.success(t('Settings updated successfully'))
+    } catch (error) {
+      const requestError = error as AxiosError<{ message?: string }>
+      toast.error(
+        requestError.response?.data?.message || t('Failed to update settings')
+      )
+    } finally {
+      releaseSubmissionGuard(submitGuardRef)
     }
-
-    for (const key of updates) {
-      const value = normalized[key]
-      await updateOption.mutateAsync({
-        key,
-        value,
-      })
-    }
-
-    baselineRef.current = normalized
   }
 
   return (
@@ -437,7 +591,9 @@ export function RoutingReliabilitySection({
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
-            isSaving={updateOption.isPending}
+            isSaving={
+              updateOptionsBulk.isPending || form.formState.isSubmitting
+            }
           />
 
           <div className='flex min-w-0 flex-col gap-4'>
@@ -1058,6 +1214,114 @@ export function RoutingReliabilitySection({
                   </SettingsSwitchItem>
                 )}
               />
+            </div>
+
+            <div className='flex min-w-0 flex-col gap-3'>
+              <h5 className='text-sm font-medium'>
+                {t('Availability email notifications')}
+              </h5>
+              <div className='grid min-w-0 gap-4 lg:grid-cols-3'>
+                <FormField
+                  control={form.control}
+                  name='monitor_setting.channel_availability_notify_enabled'
+                  render={({ field }) => (
+                    <SettingsSwitchItem className='lg:col-span-3'>
+                      <SettingsSwitchContent>
+                        <FormLabel>
+                          {t('Email on availability changes')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </SettingsSwitchItem>
+                  )}
+                />
+
+                {availabilityNotifyEnabled ? (
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.channel_availability_notify_recipients'
+                    render={({ field }) => (
+                      <FormItem className='lg:col-span-3'>
+                        <FormLabel>{t('Notification recipients')}</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            {...field}
+                            rows={4}
+                            className='min-h-24 resize-y'
+                            placeholder={
+                              'alerts@example.com\noncall@example.com'
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {availabilityRecipientState.invalidRecipients.length >
+                          0
+                            ? t(
+                                '{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.',
+                                {
+                                  valid:
+                                    availabilityRecipientState.validRecipients
+                                      .length,
+                                  invalid:
+                                    availabilityRecipientState.invalidRecipients
+                                      .length,
+                                }
+                              )
+                            : t(
+                                '{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.',
+                                {
+                                  count:
+                                    availabilityRecipientState.validRecipients
+                                      .length,
+                                }
+                              )}
+                        </FormDescription>
+                        <FormMessage />
+                        <div className='flex flex-wrap items-center gap-2'>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            disabled={
+                              availabilityTestRequest === null ||
+                              testAvailabilityNotification.isPending
+                            }
+                            onClick={() => {
+                              if (availabilityTestRequest) {
+                                testAvailabilityNotification.mutate(
+                                  availabilityTestRequest
+                                )
+                              }
+                            }}
+                          >
+                            {testAvailabilityNotification.isPending ? (
+                              <Spinner data-icon='inline-start' />
+                            ) : (
+                              <HugeiconsIcon
+                                icon={MailSend01Icon}
+                                data-icon='inline-start'
+                                aria-hidden='true'
+                              />
+                            )}
+                            {testAvailabilityNotification.isPending
+                              ? t('Sending test email...')
+                              : t('Send test email')}
+                          </Button>
+                        </div>
+                      </FormItem>
+                    )}
+                  />
+                ) : null}
+              </div>
             </div>
           </div>
 

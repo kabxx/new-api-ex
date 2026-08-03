@@ -5281,6 +5281,20 @@
     "Enter a non-negative finite number": "Enter a non-negative finite number",
     "{{omitted}} attempts omitted ({{total}} total)": "{{omitted}} attempts omitted ({{total}} total)",
     "{{omitted}} channel selections omitted ({{total}} total)": "{{omitted}} channel selections omitted ({{total}} total)",
-    "Missing usage or zero total tokens is treated as a channel failure.": "Missing usage or zero total tokens is treated as a channel failure."
+    "Missing usage or zero total tokens is treated as a channel failure.": "Missing usage or zero total tokens is treated as a channel failure.",
+    "Availability email notifications": "Availability email notifications",
+    "Email on availability changes": "Email on availability changes",
+    "Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.": "Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.",
+    "Notification recipients": "Notification recipients",
+    "{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.": "{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.",
+    "{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.": "{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.",
+    "Enter valid email addresses separated by commas, semicolons, or new lines": "Enter valid email addresses separated by commas, semicolons, or new lines",
+    "Add at least one notification recipient": "Add at least one notification recipient",
+    "Send test email": "Send test email",
+    "Sending test email...": "Sending test email...",
+    "Test email sent to {{count}} recipients": "Test email sent to {{count}} recipients",
+    "Test email sent to {{sent}} recipients; {{failed}} failed": "Test email sent to {{sent}} recipients; {{failed}} failed",
+    "Failed to send test email": "Failed to send test email",
+    "No test emails were sent. Check SMTP configuration and server logs.": "No test emails were sent. Check SMTP configuration and server logs."
   }
 }

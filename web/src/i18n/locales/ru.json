@@ -5281,6 +5281,20 @@
     "Enter a non-negative finite number": "Введите неотрицательное конечное число",
     "{{omitted}} attempts omitted ({{total}} total)": "Пропущено попыток: {{omitted}} (всего: {{total}})",
     "{{omitted}} channel selections omitted ({{total}} total)": "Пропущено выборов канала: {{omitted}} (всего: {{total}})",
-    "Missing usage or zero total tokens is treated as a channel failure.": "Отсутствие usage или нулевое общее число токенов считается сбоем канала."
+    "Missing usage or zero total tokens is treated as a channel failure.": "Отсутствие usage или нулевое общее число токенов считается сбоем канала.",
+    "Availability email notifications": "Почтовые уведомления о доступности",
+    "Email on availability changes": "Отправлять письма при изменении доступности",
+    "Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.": "Уведомлять, когда система переходит между наличием хотя бы одного включённого канала и полным отсутствием включённых каналов. Учитываются проверки состояния, автоматическое отключение или восстановление и ручные переключения; при неизменном состоянии письма не повторяются.",
+    "Notification recipients": "Получатели уведомлений",
+    "{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.": "Действительных получателей: {{count}}. SMTP настраивается в разделе Системные настройки -> Операции -> Электронная почта.",
+    "{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.": "Действительных получателей: {{valid}}; недействительных: {{invalid}}. SMTP настраивается в разделе Системные настройки -> Операции -> Электронная почта.",
+    "Enter valid email addresses separated by commas, semicolons, or new lines": "Введите действительные адреса электронной почты, разделяя их запятыми, точками с запятой или переносами строк",
+    "Add at least one notification recipient": "Добавьте хотя бы одного получателя уведомлений",
+    "Send test email": "Отправить тестовое письмо",
+    "Sending test email...": "Отправка тестового письма...",
+    "Test email sent to {{count}} recipients": "Тестовое письмо отправлено {{count}} получателям",
+    "Test email sent to {{sent}} recipients; {{failed}} failed": "Тестовое письмо отправлено {{sent}} получателям; ошибок: {{failed}}",
+    "Failed to send test email": "Не удалось отправить тестовое письмо",
+    "No test emails were sent. Check SMTP configuration and server logs.": "Ни одно тестовое письмо не отправлено. Проверьте настройки SMTP и журналы сервера."
   }
 }

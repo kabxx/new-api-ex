@@ -71,6 +71,23 @@ func clearChannelInfo(channel *model.Channel) {
 	}
 }
 
+func evaluateChannelAvailability(source string, channels []service.ChannelAvailabilityRelatedChannel) {
+	if _, err := service.EvaluateChannelAvailability(source, channels); err != nil {
+		common.SysLog("failed to evaluate channel availability: " + err.Error())
+	}
+}
+
+func channelAvailabilityReferences(channels []*model.Channel) []service.ChannelAvailabilityRelatedChannel {
+	references := make([]service.ChannelAvailabilityRelatedChannel, 0, len(channels))
+	for _, channel := range channels {
+		if channel == nil {
+			continue
+		}
+		references = append(references, service.ChannelAvailabilityRelatedChannel{ID: channel.Id, Name: channel.Name})
+	}
+	return references
+}
+
 func applyChannelStatusFilter(query *gorm.DB, statusFilter int) *gorm.DB {
 	if statusFilter == common.ChannelStatusEnabled {
 		return query.Where("status = ?", common.ChannelStatusEnabled)
@@ -701,6 +718,11 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	createdReferences := make([]service.ChannelAvailabilityRelatedChannel, 0, len(channels))
+	for _, channel := range channels {
+		createdReferences = append(createdReferences, service.ChannelAvailabilityRelatedChannel{ID: channel.Id, Name: channel.Name})
+	}
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceCreate, createdReferences)
 	recordManageAudit(c, "channel.create", map[string]interface{}{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -736,6 +758,7 @@ func DeleteChannel(c *gin.Context) {
 	} else {
 		service.InvalidateProxyClient(channelProxy)
 	}
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceDelete, []service.ChannelAvailabilityRelatedChannel{{ID: id, Name: channelName}})
 	recordManageAudit(c, "channel.delete", map[string]interface{}{
 		"id":   id,
 		"name": channelName,
@@ -757,6 +780,7 @@ func DeleteDisabledChannel(c *gin.Context) {
 	if rows > 0 {
 		service.ResetProxyClientCache()
 	}
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceDelete, nil)
 	recordManageAudit(c, "channel.delete_disabled", map[string]interface{}{
 		"count": rows,
 	})
@@ -790,12 +814,14 @@ func DisableTagChannels(c *gin.Context) {
 		})
 		return
 	}
+	related, _ := model.GetChannelsByTag(channelTag.Tag, true, false)
 	err = model.DisableChannelByTag(channelTag.Tag)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	model.InitChannelCache()
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceTag, channelAvailabilityReferences(related))
 	recordManageAudit(c, "channel.tag_disable", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
@@ -816,12 +842,14 @@ func EnableTagChannels(c *gin.Context) {
 		})
 		return
 	}
+	related, _ := model.GetChannelsByTag(channelTag.Tag, true, false)
 	err = model.EnableChannelByTag(channelTag.Tag)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	model.InitChannelCache()
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceTag, channelAvailabilityReferences(related))
 	recordManageAudit(c, "channel.tag_enable", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
@@ -907,6 +935,8 @@ func DeleteChannelBatch(c *gin.Context) {
 		})
 		return
 	}
+	var relatedChannels []*model.Channel
+	_ = model.DB.Select("id", "name").Where("id IN ?", channelBatch.Ids).Find(&relatedChannels).Error
 	deletedCount, err := model.BatchDeleteChannels(channelBatch.Ids)
 	if err != nil {
 		common.ApiError(c, err)
@@ -916,6 +946,7 @@ func DeleteChannelBatch(c *gin.Context) {
 	if deletedCount > 0 {
 		service.ResetProxyClientCache()
 	}
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceDelete, channelAvailabilityReferences(relatedChannels))
 	recordManageAudit(c, "channel.delete_batch", map[string]interface{}{
 		"count": deletedCount,
 	})
@@ -1088,6 +1119,7 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceMultiKey, []service.ChannelAvailabilityRelatedChannel{{ID: channel.Id, Name: channel.Name}})
 	model.InitChannelCache()
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
@@ -1138,6 +1170,11 @@ func UpdateChannelStatus(c *gin.Context) {
 	changed := model.UpdateChannelStatus(id, "", req.Status, "manual operation")
 	if changed {
 		model.InitChannelCache()
+		channelName := ""
+		if channel, getErr := model.GetChannelById(id, false); getErr == nil {
+			channelName = channel.Name
+		}
+		evaluateChannelAvailability(service.ChannelAvailabilitySourceManualStatus, []service.ChannelAvailabilityRelatedChannel{{ID: id, Name: channelName}})
 	}
 	recordManageAudit(c, "channel.status_update", map[string]interface{}{
 		"id":      id,
@@ -1158,6 +1195,8 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 		return
 	}
 	changedCount := 0
+	var relatedChannels []*model.Channel
+	_ = model.DB.Select("id", "name").Where("id IN ?", req.Ids).Find(&relatedChannels).Error
 	for _, id := range req.Ids {
 		if model.UpdateChannelStatus(id, "", req.Status, "manual batch operation") {
 			changedCount++
@@ -1165,6 +1204,7 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 	}
 	if changedCount > 0 {
 		model.InitChannelCache()
+		evaluateChannelAvailability(service.ChannelAvailabilitySourceManualBatch, channelAvailabilityReferences(relatedChannels))
 	}
 	recordManageAudit(c, "channel.status_update_batch", map[string]interface{}{
 		"count":  changedCount,
@@ -1450,6 +1490,7 @@ func CopyChannel(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	evaluateChannelAvailability(service.ChannelAvailabilitySourceCopy, []service.ChannelAvailabilityRelatedChannel{{ID: clone.Id, Name: clone.Name}})
 	recordManageAudit(c, "channel.copy", map[string]interface{}{
 		"sourceId": id,
 		"id":       clone.Id,
@@ -1530,6 +1571,12 @@ func ManageMultiKeys(c *gin.Context) {
 			"id":     channel.Id,
 		})
 	}
+	availabilityChanged := false
+	defer func() {
+		if availabilityChanged {
+			evaluateChannelAvailability(service.ChannelAvailabilitySourceMultiKey, []service.ChannelAvailabilityRelatedChannel{{ID: channel.Id, Name: channel.Name}})
+		}
+	}()
 
 	lock := model.GetChannelPollingLock(channel.Id)
 	lock.Lock()
@@ -1685,6 +1732,7 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		availabilityChanged = true
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1721,12 +1769,16 @@ func ManageMultiKeys(c *gin.Context) {
 		if channel.ChannelInfo.MultiKeyDisabledReason != nil {
 			delete(channel.ChannelInfo.MultiKeyDisabledReason, keyIndex)
 		}
+		if channel.Status != common.ChannelStatusManuallyDisabled {
+			channel.Status = common.ChannelStatusEnabled
+		}
 
 		err = channel.Update()
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
+		availabilityChanged = true
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1745,12 +1797,16 @@ func ManageMultiKeys(c *gin.Context) {
 		channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
 		channel.ChannelInfo.MultiKeyDisabledTime = make(map[int]int64)
 		channel.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
+		if channel.Status != common.ChannelStatusManuallyDisabled {
+			channel.Status = common.ChannelStatusEnabled
+		}
 
 		err = channel.Update()
 		if err != nil {
 			common.ApiError(c, err)
 			return
 		}
+		availabilityChanged = true
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1798,6 +1854,7 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		availabilityChanged = true
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1878,6 +1935,7 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		availabilityChanged = true
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1946,6 +2004,7 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		availabilityChanged = true
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{

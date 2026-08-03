@@ -111,6 +111,10 @@ const MODELS_SECTIONS = [
             settings['monitor_setting.channel_test_mode'],
           'monitor_setting.zero_token_as_failure':
             settings['monitor_setting.zero_token_as_failure'],
+          'monitor_setting.channel_availability_notify_enabled':
+            settings['monitor_setting.channel_availability_notify_enabled'],
+          'monitor_setting.channel_availability_notify_recipients':
+            settings['monitor_setting.channel_availability_notify_recipients'],
         }}
       />
     ),

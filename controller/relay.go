@@ -457,9 +457,13 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	shouldDisable := !clientGone && service.ShouldDisableChannel(err) && channelError.AutoBan &&
 		service.RecordChannelFailure(channelError.ChannelId, channelError.UsingKey, common.AutoDisableTolerance)
 	if shouldDisable {
-		gopool.Go(func() {
-			service.DisableChannel(channelError, err.ErrorWithStatusCode())
-		})
+		if c.GetBool(channelAvailabilityDeferredContextKey) {
+			service.DisableChannelDeferredAvailability(channelError, err.ErrorWithStatusCode())
+		} else {
+			gopool.Go(func() {
+				service.DisableChannel(channelError, err.ErrorWithStatusCode())
+			})
+		}
 	}
 	recordChannelErrorLog(c, channelError, err, false, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex))
 	return shouldDisable

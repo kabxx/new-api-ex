@@ -1,14 +1,18 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/model_setting"
@@ -121,6 +125,43 @@ type OptionUpdateRequest struct {
 	Value any    `json:"value"`
 }
 
+type OptionBulkUpdateRequest struct {
+	Options map[string]string `json:"options"`
+}
+
+func UpdateOptionsBulk(c *gin.Context) {
+	request := OptionBulkUpdateRequest{}
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || len(request.Options) == 0 {
+		common.ApiErrorMsg(c, "无效的参数")
+		return
+	}
+
+	for key := range request.Options {
+		if !model.IsRoutingReliabilityBulkOptionKey(key) {
+			common.ApiErrorMsg(c, "包含不允许批量修改的配置项")
+			return
+		}
+	}
+	if err := model.UpdateRoutingReliabilityOptionsBulk(request.Options); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	keys := make([]string, 0, len(request.Options))
+	for key := range request.Options {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	recordManageAudit(c, "option.update_bulk", map[string]interface{}{
+		"keys":  keys,
+		"count": len(keys),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+	})
+}
+
 func UpdateOption(c *gin.Context) {
 	var option OptionUpdateRequest
 	err := common.DecodeJson(c.Request.Body, &option)
@@ -131,15 +172,26 @@ func UpdateOption(c *gin.Context) {
 		})
 		return
 	}
-	switch option.Value.(type) {
+	switch value := option.Value.(type) {
 	case bool:
-		option.Value = common.Interface2String(option.Value.(bool))
+		option.Value = common.Interface2String(value)
 	case float64:
-		option.Value = common.Interface2String(option.Value.(float64))
+		option.Value = common.Interface2String(value)
 	case int:
-		option.Value = common.Interface2String(option.Value.(int))
+		option.Value = common.Interface2String(value)
+	case []any:
+		if option.Key != "monitor_setting.channel_availability_notify_recipients" {
+			option.Value = fmt.Sprintf("%v", value)
+			break
+		}
+		encoded, marshalErr := common.Marshal(value)
+		if marshalErr != nil {
+			common.ApiErrorMsg(c, "无效的参数")
+			return
+		}
+		option.Value = string(encoded)
 	default:
-		option.Value = fmt.Sprintf("%v", option.Value)
+		option.Value = fmt.Sprintf("%v", value)
 	}
 	switch option.Key {
 	case "QuotaForInviter", "QuotaForInvitee":
@@ -375,5 +427,41 @@ func UpdateOption(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
+	})
+}
+
+type channelAvailabilityNotificationTestRequest struct {
+	Recipients []string `json:"recipients"`
+}
+
+func TestChannelAvailabilityNotification(c *gin.Context) {
+	request := channelAvailabilityNotificationTestRequest{}
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil && !errors.Is(err, io.EOF) {
+		common.ApiErrorMsg(c, "无效的收件人列表")
+		return
+	}
+	if len(request.Recipients) == 0 {
+		request.Recipients = operation_setting.GetMonitorSettingSnapshot().ChannelAvailabilityNotifyRecipients
+	}
+	results, err := service.SendChannelAvailabilityTestEmails(request.Recipients)
+	if err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+	succeeded := 0
+	for _, result := range results {
+		if result.Success {
+			succeeded++
+		}
+	}
+	failed := len(results) - succeeded
+	c.JSON(http.StatusOK, gin.H{
+		"success": failed == 0,
+		"message": fmt.Sprintf("测试邮件发送完成：成功 %d，失败 %d", succeeded, failed),
+		"data": gin.H{
+			"succeeded": succeeded,
+			"failed":    failed,
+			"results":   results,
+		},
 	})
 }

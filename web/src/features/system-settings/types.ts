@@ -39,6 +39,32 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type UpdateOptionsBulkRequest = {
+  options: Record<string, string>
+}
+
+export type ChannelAvailabilityNotificationTestData = {
+  succeeded: number
+  failed: number
+  results: Array<{
+    recipient: string
+    success: boolean
+    error?: string
+  }>
+}
+
+export type ChannelAvailabilityNotificationTestResponse =
+  | {
+      success: true
+      message: string
+      data: ChannelAvailabilityNotificationTestData
+    }
+  | {
+      success: false
+      message: string
+      data?: ChannelAvailabilityNotificationTestData
+    }
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
@@ -249,6 +275,8 @@ export type ModelSettings = {
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': 'scheduled_all' | 'passive_recovery'
   'monitor_setting.zero_token_as_failure': boolean
+  'monitor_setting.channel_availability_notify_enabled': boolean
+  'monitor_setting.channel_availability_notify_recipients': string[]
   'channel_affinity_setting.enabled': boolean
   'channel_affinity_setting.switch_on_success': boolean
   'channel_affinity_setting.keep_on_channel_disabled': boolean

@@ -31,6 +31,7 @@ export const STATIC_I18N_KEYS = [
   'System Settings',
   'Back to Dashboard',
   'Auto-disable rules',
+  'Availability email notifications',
   'Channel health checks',
   'Request retry',
 

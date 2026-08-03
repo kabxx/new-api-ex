@@ -5281,6 +5281,20 @@
     "Enter a non-negative finite number": "Nhập số hữu hạn không âm",
     "{{omitted}} attempts omitted ({{total}} total)": "Đã lược bỏ {{omitted}} lần thử (tổng {{total}})",
     "{{omitted}} channel selections omitted ({{total}} total)": "Đã lược bỏ {{omitted}} lần chọn kênh (tổng {{total}})",
-    "Missing usage or zero total tokens is treated as a channel failure.": "Thiếu usage hoặc tổng token bằng 0 được coi là lỗi kênh."
+    "Missing usage or zero total tokens is treated as a channel failure.": "Thiếu usage hoặc tổng token bằng 0 được coi là lỗi kênh.",
+    "Availability email notifications": "Thông báo email về tính khả dụng",
+    "Email on availability changes": "Gửi email khi tính khả dụng thay đổi",
+    "Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.": "Thông báo khi toàn hệ thống chuyển giữa trạng thái có ít nhất một kênh được bật và không còn kênh nào được bật. Bao gồm thay đổi do kiểm tra tình trạng, tự động vô hiệu hóa hoặc khôi phục và bật tắt thủ công; không gửi lặp lại khi trạng thái không đổi.",
+    "Notification recipients": "Người nhận thông báo",
+    "{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.": "Có {{count}} người nhận hợp lệ. SMTP được cấu hình tại Cài đặt hệ thống -> Vận hành -> Email.",
+    "{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.": "Có {{valid}} người nhận hợp lệ và {{invalid}} địa chỉ không hợp lệ. SMTP được cấu hình tại Cài đặt hệ thống -> Vận hành -> Email.",
+    "Enter valid email addresses separated by commas, semicolons, or new lines": "Nhập địa chỉ email hợp lệ, phân tách bằng dấu phẩy, dấu chấm phẩy hoặc dòng mới",
+    "Add at least one notification recipient": "Thêm ít nhất một người nhận thông báo",
+    "Send test email": "Gửi email thử nghiệm",
+    "Sending test email...": "Đang gửi email thử nghiệm...",
+    "Test email sent to {{count}} recipients": "Đã gửi email thử nghiệm tới {{count}} người nhận",
+    "Test email sent to {{sent}} recipients; {{failed}} failed": "Đã gửi email thử nghiệm tới {{sent}} người nhận; {{failed}} lần gửi thất bại",
+    "Failed to send test email": "Không thể gửi email thử nghiệm",
+    "No test emails were sent. Check SMTP configuration and server logs.": "Không gửi được email thử nghiệm nào. Hãy kiểm tra cấu hình SMTP và nhật ký máy chủ."
   }
 }

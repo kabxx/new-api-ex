@@ -939,12 +939,16 @@ type channelTestSummary struct {
 	Enabled   int `json:"enabled"`
 }
 
+const channelAvailabilityDeferredContextKey = "channel_availability_notification_deferred"
+
 // performChannelTests runs the channel test loop synchronously, honoring ctx
 // cancellation so a system-task runner that loses its lease stops promptly. When
 // report is non-nil it is called after each channel with (processed, total) so
 // the system task can surface progress.
 func performChannelTests(ctx context.Context, channels []*model.Channel, testUserID int, allowDisable bool, report func(processed, total int)) channelTestSummary {
 	summary := channelTestSummary{}
+	relatedChannels := make([]service.ChannelAvailabilityRelatedChannel, 0)
+	completed := true
 	var disableThreshold = int64(common.ChannelDisableThreshold * 1000)
 	if disableThreshold == 0 {
 		disableThreshold = 10000000 // a impossible value
@@ -953,6 +957,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 	total := len(channels)
 	for index, channel := range channels {
 		if ctx != nil && ctx.Err() != nil {
+			completed = false
 			break
 		}
 		if report != nil {
@@ -967,6 +972,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		tok := time.Now()
 		milliseconds := tok.Sub(tik).Milliseconds()
 		if ctx != nil && ctx.Err() != nil {
+			completed = false
 			break
 		}
 
@@ -998,15 +1004,19 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 
 		// disable channel
 		if allowDisable && isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
+			result.context.Set(channelAvailabilityDeferredContextKey, true)
 			if processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, usingKey, channel.GetAutoBan()), newAPIError) {
 				summary.Disabled++
+				relatedChannels = append(relatedChannels, service.ChannelAvailabilityRelatedChannel{ID: channel.Id, Name: channel.Name})
 			}
 		}
 
 		// enable channel
 		if result.localErr == nil && !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
-			service.EnableChannel(channel.Id, usingKey, channel.Name)
-			summary.Enabled++
+			if service.EnableChannelDeferredAvailability(channel.Id, usingKey, channel.Name) {
+				summary.Enabled++
+				relatedChannels = append(relatedChannels, service.ChannelAvailabilityRelatedChannel{ID: channel.Id, Name: channel.Name})
+			}
 		}
 
 		channel.UpdateResponseTime(milliseconds)
@@ -1016,16 +1026,29 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 			} else {
 				select {
 				case <-ctx.Done():
+					completed = false
+					finalizeChannelHealthAvailability(false, relatedChannels)
 					return summary
 				case <-time.After(common.RequestInterval):
 				}
 			}
 		}
 	}
+	finalizeChannelHealthAvailability(completed, relatedChannels)
 	if report != nil && (ctx == nil || ctx.Err() == nil) {
 		report(total, total) // mark complete only when the full set was tested
 	}
 	return summary
+}
+
+func finalizeChannelHealthAvailability(completed bool, related []service.ChannelAvailabilityRelatedChannel) {
+	source := service.ChannelAvailabilitySourceHealthCheck
+	if !completed {
+		source = service.ChannelAvailabilitySourceHealthCheckPartial
+	}
+	if _, err := service.EvaluateChannelAvailability(source, related); err != nil {
+		common.SysLog("failed to evaluate channel availability after health check: " + err.Error())
+	}
 }
 
 // runChannelTestTask runs one synchronous channel test cycle for the system task

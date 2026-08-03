@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,51 @@ import (
 type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
 	Value string `json:"value"`
+}
+
+var routingReliabilityBulkOptionKeys = map[string]struct{}{
+	"RetryTimes": {}, "ChannelDisableThreshold": {},
+	"AutomaticDisableChannelEnabled": {}, "AutoDisableTolerance": {},
+	"AutomaticEnableChannelEnabled": {}, "AutomaticDisableKeywords": {},
+	"AutomaticDisableStatusCodes": {}, "AutomaticRetryStatusCodes": {},
+	"retry_setting.unlimited": {}, "retry_setting.time_budget_seconds": {},
+	"retry_setting.delay_strategy": {}, "retry_setting.fixed_delay_milliseconds": {},
+	"retry_setting.exponential_base_delay_milliseconds": {},
+	"retry_setting.exponential_max_delay_milliseconds":  {},
+	"retry_setting.jitter_percent":                      {}, "retry_setting.respect_retry_after": {},
+	"retry_setting.channel_strategy": {}, "retry_setting.exhausted_action": {},
+	"retry_setting.try_other_keys": {}, "retry_setting.unlimited_task_retries": {},
+	"monitor_setting.auto_test_channel_enabled": {},
+	"monitor_setting.auto_test_channel_minutes": {},
+	"monitor_setting.channel_test_mode":         {}, "monitor_setting.zero_token_as_failure": {},
+	"monitor_setting.channel_availability_notify_enabled":    {},
+	"monitor_setting.channel_availability_notify_recipients": {},
+}
+
+func IsRoutingReliabilityBulkOptionKey(key string) bool {
+	_, ok := routingReliabilityBulkOptionKeys[key]
+	return ok
+}
+
+type parsedRoutingReliabilityOptions struct {
+	retryTimes                    int
+	hasRetryTimes                 bool
+	channelDisableThreshold       float64
+	hasChannelDisableThreshold    bool
+	autoDisableChannelEnabled     bool
+	hasAutoDisableChannelEnabled  bool
+	autoEnableChannelEnabled      bool
+	hasAutoEnableChannelEnabled   bool
+	autoDisableTolerance          int
+	hasAutoDisableTolerance       bool
+	automaticDisableKeywords      string
+	hasAutomaticDisableKeywords   bool
+	automaticDisableStatusCodes   []operation_setting.StatusCodeRange
+	hasAutomaticDisableStatusCode bool
+	automaticRetryStatusCodes     []operation_setting.StatusCodeRange
+	hasAutomaticRetryStatusCode   bool
+	retryValues                   map[string]string
+	monitorValues                 map[string]string
 }
 
 func AllOption() ([]*Option, error) {
@@ -229,7 +275,24 @@ func validateOptionValue(key string, value string) error {
 	case "AutoDisableTolerance":
 		_, err := parseAutoDisableTolerance(value)
 		return err
+	case "ChannelDisableThreshold":
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
+			return fmt.Errorf("ChannelDisableThreshold must be a non-negative finite number")
+		}
+		return nil
+	case "AutomaticDisableChannelEnabled", "AutomaticEnableChannelEnabled":
+		_, err := strconv.ParseBool(value)
+		return err
+	case "AutomaticDisableStatusCodes", "AutomaticRetryStatusCodes":
+		_, err := operation_setting.ParseHTTPStatusCodeRanges(value)
+		return err
+	case "AutomaticDisableKeywords":
+		return nil
 	default:
+		if strings.HasPrefix(key, "monitor_setting.") {
+			return operation_setting.ValidateMonitorOption(key, value)
+		}
 		if strings.HasPrefix(key, "retry_setting.") {
 			return operation_setting.ValidateRetryOption(key, value)
 		}
@@ -241,23 +304,226 @@ func validateOptionValue(key string, value string) error {
 	}
 }
 
+func validateChannelAvailabilityNotificationCombination(values map[string]string) error {
+	const (
+		enabledKey    = "monitor_setting.channel_availability_notify_enabled"
+		recipientsKey = "monitor_setting.channel_availability_notify_recipients"
+	)
+	_, updatesEnabled := values[enabledKey]
+	_, updatesRecipients := values[recipientsKey]
+	if !updatesEnabled && !updatesRecipients {
+		return nil
+	}
+
+	setting := operation_setting.GetMonitorSettingSnapshot()
+	enabled := setting.ChannelAvailabilityNotifyEnabled
+	recipients := setting.ChannelAvailabilityNotifyRecipients
+	if value, ok := values[enabledKey]; ok {
+		enabled, _ = strconv.ParseBool(value)
+	}
+	if value, ok := values[recipientsKey]; ok {
+		if err := common.UnmarshalJsonStr(value, &recipients); err != nil {
+			return err
+		}
+	}
+	if !enabled {
+		return nil
+	}
+	if _, err := operation_setting.NormalizeChannelAvailabilityNotifyRecipients(recipients); err != nil {
+		return fmt.Errorf("channel availability notification recipients are required when notifications are enabled: %w", err)
+	}
+	return nil
+}
+
+func prepareRoutingReliabilityOptions(values map[string]string) (map[string]string, parsedRoutingReliabilityOptions, error) {
+	prepared := make(map[string]string, len(values))
+	parsed := parsedRoutingReliabilityOptions{
+		retryValues:   make(map[string]string),
+		monitorValues: make(map[string]string),
+	}
+	for key, value := range values {
+		if !IsRoutingReliabilityBulkOptionKey(key) {
+			return nil, parsed, fmt.Errorf("option %s is not allowed in the routing reliability bulk update", key)
+		}
+		if err := validateOptionValue(key, value); err != nil {
+			return nil, parsed, err
+		}
+		prepared[key] = value
+		switch key {
+		case "RetryTimes":
+			parsed.retryTimes, _ = parseRetryTimes(value)
+			parsed.hasRetryTimes = true
+		case "ChannelDisableThreshold":
+			parsed.channelDisableThreshold, _ = strconv.ParseFloat(value, 64)
+			parsed.hasChannelDisableThreshold = true
+		case "AutomaticDisableChannelEnabled":
+			parsed.autoDisableChannelEnabled, _ = strconv.ParseBool(value)
+			parsed.hasAutoDisableChannelEnabled = true
+		case "AutomaticEnableChannelEnabled":
+			parsed.autoEnableChannelEnabled, _ = strconv.ParseBool(value)
+			parsed.hasAutoEnableChannelEnabled = true
+		case "AutoDisableTolerance":
+			parsed.autoDisableTolerance, _ = parseAutoDisableTolerance(value)
+			parsed.hasAutoDisableTolerance = true
+		case "AutomaticDisableKeywords":
+			parsed.automaticDisableKeywords = value
+			parsed.hasAutomaticDisableKeywords = true
+		case "AutomaticDisableStatusCodes":
+			parsed.automaticDisableStatusCodes, _ = operation_setting.ParseHTTPStatusCodeRanges(value)
+			parsed.hasAutomaticDisableStatusCode = true
+		case "AutomaticRetryStatusCodes":
+			parsed.automaticRetryStatusCodes, _ = operation_setting.ParseHTTPStatusCodeRanges(value)
+			parsed.hasAutomaticRetryStatusCode = true
+		default:
+			if strings.HasPrefix(key, "retry_setting.") {
+				parsed.retryValues[strings.TrimPrefix(key, "retry_setting.")] = value
+				continue
+			}
+			if strings.HasPrefix(key, "monitor_setting.") {
+				configKey := strings.TrimPrefix(key, "monitor_setting.")
+				if key == "monitor_setting.channel_availability_notify_recipients" {
+					var recipients []string
+					_ = common.UnmarshalJsonStr(value, &recipients)
+					if len(recipients) > 0 {
+						normalized, err := operation_setting.NormalizeChannelAvailabilityNotifyRecipients(recipients)
+						if err != nil {
+							return nil, parsed, err
+						}
+						encoded, err := common.Marshal(normalized)
+						if err != nil {
+							return nil, parsed, err
+						}
+						value = string(encoded)
+						prepared[key] = value
+					}
+				}
+				parsed.monitorValues[configKey] = value
+			}
+		}
+	}
+	if err := validateChannelAvailabilityNotificationCombination(prepared); err != nil {
+		return nil, parsed, err
+	}
+	if len(parsed.monitorValues) > 0 && config.GlobalConfig.Get("monitor_setting") == nil {
+		return nil, parsed, fmt.Errorf("monitor setting is not registered")
+	}
+	if len(parsed.retryValues) > 0 && config.GlobalConfig.Get("retry_setting") == nil {
+		return nil, parsed, fmt.Errorf("retry setting is not registered")
+	}
+	return prepared, parsed, nil
+}
+
+func publishRoutingReliabilityOptions(values map[string]string, parsed parsedRoutingReliabilityOptions) {
+	common.OptionMapRWMutex.Lock()
+	for key, value := range values {
+		common.OptionMap[key] = value
+	}
+	common.OptionMapRWMutex.Unlock()
+
+	if parsed.hasRetryTimes {
+		common.RetryTimes = parsed.retryTimes
+	}
+	if parsed.hasChannelDisableThreshold {
+		common.ChannelDisableThreshold = parsed.channelDisableThreshold
+	}
+	if parsed.hasAutoDisableChannelEnabled {
+		common.AutomaticDisableChannelEnabled = parsed.autoDisableChannelEnabled
+	}
+	if parsed.hasAutoEnableChannelEnabled {
+		common.AutomaticEnableChannelEnabled = parsed.autoEnableChannelEnabled
+	}
+	if parsed.hasAutoDisableTolerance {
+		common.AutoDisableTolerance = parsed.autoDisableTolerance
+	}
+	if parsed.hasAutomaticDisableKeywords {
+		operation_setting.AutomaticDisableKeywordsFromString(parsed.automaticDisableKeywords)
+	}
+	if parsed.hasAutomaticDisableStatusCode {
+		operation_setting.AutomaticDisableStatusCodeRanges = append([]operation_setting.StatusCodeRange(nil), parsed.automaticDisableStatusCodes...)
+	}
+	if parsed.hasAutomaticRetryStatusCode {
+		operation_setting.AutomaticRetryStatusCodeRanges = append([]operation_setting.StatusCodeRange(nil), parsed.automaticRetryStatusCodes...)
+	}
+	if len(parsed.monitorValues) > 0 {
+		config.GlobalConfig.Update("monitor_setting", parsed.monitorValues)
+	}
+	if len(parsed.retryValues) > 0 {
+		config.GlobalConfig.Update("retry_setting", parsed.retryValues)
+	}
+}
+
+func syncAvailabilityOnNotificationToggle(tx *gorm.DB, values map[string]string, currentEnabled bool) error {
+	value, ok := values["monitor_setting.channel_availability_notify_enabled"]
+	if !ok {
+		return nil
+	}
+	enabled, _ := strconv.ParseBool(value)
+	if enabled == currentEnabled {
+		return nil
+	}
+	if err := CancelPendingChannelAvailabilityNotificationEventsWithDB(tx); err != nil {
+		return err
+	}
+	return SyncChannelAvailabilityStateWithDB(tx)
+}
+
+func UpdateRoutingReliabilityOptionsBulk(values map[string]string) error {
+	if len(values) == 0 {
+		return fmt.Errorf("at least one option is required")
+	}
+	prepared, parsed, err := prepareRoutingReliabilityOptions(values)
+	if err != nil {
+		return err
+	}
+
+	currentMonitorSetting := operation_setting.GetMonitorSettingSnapshot()
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		for key, value := range prepared {
+			option := Option{Key: key}
+			if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+				return err
+			}
+			option.Value = value
+			if err := tx.Save(&option).Error; err != nil {
+				return err
+			}
+		}
+		return syncAvailabilityOnNotificationToggle(tx, prepared, currentMonitorSetting.ChannelAvailabilityNotifyEnabled)
+	}); err != nil {
+		return err
+	}
+
+	publishRoutingReliabilityOptions(prepared, parsed)
+	return nil
+}
+
 func UpdateOption(key string, value string) error {
 	if err := validateOptionValue(key, value); err != nil {
 		return err
 	}
-	// Save to database first
-	option := Option{
-		Key: key,
+	if err := validateChannelAvailabilityNotificationCombination(map[string]string{key: value}); err != nil {
+		return err
 	}
-	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
-	option.Value = value
-	// Save is a combination function.
-	// If save value does not contain primary key, it will execute Create,
-	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
+	currentMonitorSetting := operation_setting.GetMonitorSettingSnapshot()
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		option := Option{Key: key}
+		if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+			return err
+		}
+		option.Value = value
+		if err := tx.Save(&option).Error; err != nil {
+			return err
+		}
+		return syncAvailabilityOnNotificationToggle(tx, map[string]string{key: value}, currentMonitorSetting.ChannelAvailabilityNotifyEnabled)
+	})
+	if err != nil {
+		return err
+	}
 	// Update OptionMap
-	return updateOptionMap(key, value)
+	if err := updateOptionMap(key, value); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateOptionsBulk persists multiple key/value pairs in a single database
@@ -269,11 +535,25 @@ func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
 	}
+	allRoutingReliabilityOptions := true
+	for key := range values {
+		if !IsRoutingReliabilityBulkOptionKey(key) {
+			allRoutingReliabilityOptions = false
+			break
+		}
+	}
+	if allRoutingReliabilityOptions {
+		return UpdateRoutingReliabilityOptionsBulk(values)
+	}
 	for key, value := range values {
 		if err := validateOptionValue(key, value); err != nil {
 			return err
 		}
 	}
+	if err := validateChannelAvailabilityNotificationCombination(values); err != nil {
+		return err
+	}
+	currentMonitorSetting := operation_setting.GetMonitorSettingSnapshot()
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
 			option := Option{Key: k}
@@ -285,19 +565,36 @@ func UpdateOptionsBulk(values map[string]string) error {
 				return err
 			}
 		}
-		return nil
+		return syncAvailabilityOnNotificationToggle(tx, values, currentMonitorSetting.ChannelAvailabilityNotifyEnabled)
 	})
 	if err != nil {
 		return err
 	}
 	retryValues := make(map[string]string)
+	monitorValues := make(map[string]string)
 	for k, v := range values {
 		if strings.HasPrefix(k, "retry_setting.") {
 			retryValues[strings.TrimPrefix(k, "retry_setting.")] = v
 			continue
 		}
+		if strings.HasPrefix(k, "monitor_setting.") {
+			monitorValues[strings.TrimPrefix(k, "monitor_setting.")] = v
+			continue
+		}
 		if err := updateOptionMap(k, v); err != nil {
 			return err
+		}
+	}
+	if len(monitorValues) > 0 {
+		common.OptionMapRWMutex.Lock()
+		for key, value := range values {
+			if strings.HasPrefix(key, "monitor_setting.") {
+				common.OptionMap[key] = value
+			}
+		}
+		common.OptionMapRWMutex.Unlock()
+		if !config.GlobalConfig.Update("monitor_setting", monitorValues) {
+			return fmt.Errorf("monitor setting is not registered")
 		}
 	}
 	if len(retryValues) > 0 {

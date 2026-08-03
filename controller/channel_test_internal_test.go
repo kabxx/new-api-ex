@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -315,12 +316,11 @@ func TestSelectChannelsForAutomaticTestScheduledSkipsManualDisabled(t *testing.T
 }
 
 func TestChannelTestZeroTokenErrorOnlyAppliesToEnabledTextUsageChecks(t *testing.T) {
-	setting := operation_setting.GetMonitorSetting()
-	original := *setting
+	original := operation_setting.GetMonitorSettingSnapshot().ZeroTokenAsFailure
 	previousAutomaticDisableEnabled := common.AutomaticDisableChannelEnabled
 	common.AutomaticDisableChannelEnabled = true
 	t.Cleanup(func() {
-		*setting = original
+		require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": common.Interface2String(original)}))
 		common.AutomaticDisableChannelEnabled = previousAutomaticDisableEnabled
 	})
 
@@ -366,7 +366,7 @@ func TestChannelTestZeroTokenErrorOnlyAppliesToEnabledTextUsageChecks(t *testing
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			setting.ZeroTokenAsFailure = test.enabled
+			require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": common.Interface2String(test.enabled)}))
 			err := channelTestZeroTokenError(test.relayInfo, test.usage)
 			if !test.wantFailure {
 				require.Nil(t, err)

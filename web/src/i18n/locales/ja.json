@@ -5281,6 +5281,20 @@
     "Enter a non-negative finite number": "0 以上の有限数を入力してください",
     "{{omitted}} attempts omitted ({{total}} total)": "{{total}} 回中 {{omitted}} 回の試行を省略",
     "{{omitted}} channel selections omitted ({{total}} total)": "{{total}} 回中 {{omitted}} 回のチャネル選択を省略",
-    "Missing usage or zero total tokens is treated as a channel failure.": "usage がない、または合計 token が 0 の場合はチャネル障害として扱います。"
+    "Missing usage or zero total tokens is treated as a channel failure.": "usage がない、または合計 token が 0 の場合はチャネル障害として扱います。",
+    "Availability email notifications": "可用性メール通知",
+    "Email on availability changes": "可用性の変化時にメールを送信",
+    "Notify when the system changes between having at least one enabled channel and having none. Health checks, automatic disable or recovery, and manual switches are included; unchanged states are not repeated.": "システム全体が、有効なチャネルが1つ以上ある状態と、1つもない状態の間で変化したときに通知します。ヘルスチェック、自動無効化または復旧、手動切り替えによる変化を含み、状態が変わらない限り重複送信しません。",
+    "Notification recipients": "通知先",
+    "{{count}} valid recipients. SMTP is configured under System settings -> Operations -> Email.": "有効な通知先は {{count}} 件です。SMTP はシステム設定 -> 運用 -> メールで設定します。",
+    "{{valid}} valid recipients; {{invalid}} invalid. SMTP is configured under System settings -> Operations -> Email.": "有効な通知先は {{valid}} 件、無効なアドレスは {{invalid}} 件です。SMTP はシステム設定 -> 運用 -> メールで設定します。",
+    "Enter valid email addresses separated by commas, semicolons, or new lines": "有効なメールアドレスをカンマ、セミコロン、または改行で区切って入力してください",
+    "Add at least one notification recipient": "通知先を1件以上追加してください",
+    "Send test email": "テストメールを送信",
+    "Sending test email...": "テストメールを送信中...",
+    "Test email sent to {{count}} recipients": "{{count}} 件の通知先にテストメールを送信しました",
+    "Test email sent to {{sent}} recipients; {{failed}} failed": "{{sent}} 件にテストメールを送信し、{{failed}} 件が失敗しました",
+    "Failed to send test email": "テストメールを送信できませんでした",
+    "No test emails were sent. Check SMTP configuration and server logs.": "テストメールを送信できませんでした。SMTP 設定とサーバーログを確認してください。"
   }
 }
