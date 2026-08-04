@@ -568,6 +568,7 @@ export function RoutingReliabilitySection({
   const retryTimeBudget = form.watch('retry_setting.time_budget_seconds')
   const retryDelayStrategy = form.watch('retry_setting.delay_strategy')
   const retryChannelStrategy = form.watch('retry_setting.channel_strategy')
+  const retryTryOtherKeys = form.watch('retry_setting.try_other_keys')
   const autoDisableStrategy = form.watch(
     'monitor_setting.auto_disable_strategy'
   )
@@ -993,7 +994,8 @@ export function RoutingReliabilitySection({
                 />
               )}
 
-              {retryChannelStrategy === 'same_priority' && (
+              {(retryChannelStrategy === 'same_priority' ||
+                retryTryOtherKeys) && (
                 <FormField
                   control={form.control}
                   name='retry_setting.exhausted_action'
