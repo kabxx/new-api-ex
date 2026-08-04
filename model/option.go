@@ -33,10 +33,17 @@ var routingReliabilityBulkOptionKeys = map[string]struct{}{
 	"retry_setting.exponential_max_delay_milliseconds":  {},
 	"retry_setting.jitter_percent":                      {}, "retry_setting.respect_retry_after": {},
 	"retry_setting.channel_strategy": {}, "retry_setting.exhausted_action": {},
+	"retry_setting.same_priority_strategy":      {},
 	"retry_setting.try_other_keys":              {},
 	"monitor_setting.auto_test_channel_enabled": {},
 	"monitor_setting.auto_test_channel_minutes": {},
 	"monitor_setting.channel_test_mode":         {}, "monitor_setting.zero_token_as_failure": {},
+	"monitor_setting.auto_disable_strategy":                  {},
+	"monitor_setting.auto_disable_window_minutes":            {},
+	"monitor_setting.auto_disable_window_failures":           {},
+	"monitor_setting.auto_disable_rate_sample_size":          {},
+	"monitor_setting.auto_disable_rate_min_samples":          {},
+	"monitor_setting.auto_disable_rate_threshold_percent":    {},
 	"monitor_setting.channel_availability_notify_enabled":    {},
 	"monitor_setting.channel_availability_notify_recipients": {},
 }
@@ -335,6 +342,34 @@ func validateChannelAvailabilityNotificationCombination(values map[string]string
 	return nil
 }
 
+func validateAutoDisableCombination(values map[string]string) error {
+	setting := operation_setting.GetMonitorSettingSnapshot()
+	get := func(key string) string {
+		if value, ok := values[key]; ok {
+			return value
+		}
+		return ""
+	}
+	if value := get("monitor_setting.auto_disable_rate_sample_size"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		setting.AutoDisableRateSampleSize = parsed
+	}
+	if value := get("monitor_setting.auto_disable_rate_min_samples"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		setting.AutoDisableRateMinSamples = parsed
+	}
+	if setting.AutoDisableRateMinSamples > setting.AutoDisableRateSampleSize {
+		return fmt.Errorf("monitor_setting.auto_disable_rate_min_samples cannot exceed monitor_setting.auto_disable_rate_sample_size")
+	}
+	return nil
+}
+
 func prepareRoutingReliabilityOptions(values map[string]string) (map[string]string, parsedRoutingReliabilityOptions, error) {
 	prepared := make(map[string]string, len(values))
 	parsed := parsedRoutingReliabilityOptions{
@@ -402,6 +437,9 @@ func prepareRoutingReliabilityOptions(values map[string]string) (map[string]stri
 		}
 	}
 	if err := validateChannelAvailabilityNotificationCombination(prepared); err != nil {
+		return nil, parsed, err
+	}
+	if err := validateAutoDisableCombination(prepared); err != nil {
 		return nil, parsed, err
 	}
 	if len(parsed.monitorValues) > 0 && config.GlobalConfig.Get("monitor_setting") == nil {
@@ -502,6 +540,9 @@ func UpdateOption(key string, value string) error {
 		return err
 	}
 	if err := validateChannelAvailabilityNotificationCombination(map[string]string{key: value}); err != nil {
+		return err
+	}
+	if err := validateAutoDisableCombination(map[string]string{key: value}); err != nil {
 		return err
 	}
 	currentMonitorSetting := operation_setting.GetMonitorSettingSnapshot()

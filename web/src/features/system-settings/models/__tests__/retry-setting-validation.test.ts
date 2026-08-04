@@ -24,6 +24,8 @@ import {
   createRetrySettingSchema,
   createRetryTimesSchema,
   createSafeNonNegativeIntegerSchema,
+  SAME_PRIORITY_STRATEGY_DESCRIPTION_KEYS,
+  samePriorityStrategies,
 } from '../retry-setting-validation.ts'
 
 const translate = (key: string) => `translated:${key}`
@@ -57,6 +59,7 @@ describe('retry setting validation', () => {
       jitter_percent: 12.5,
       respect_retry_after: true,
       channel_strategy: 'legacy',
+      same_priority_strategy: 'latency_first',
       exhausted_action: 'stop',
       try_other_keys: true,
     })
@@ -67,7 +70,21 @@ describe('retry setting validation', () => {
       assert.equal(result.data.exponential_base_delay_milliseconds, 125)
       assert.equal(result.data.exponential_max_delay_milliseconds, 5000)
       assert.equal(result.data.jitter_percent, 12.5)
+      assert.equal(result.data.same_priority_strategy, 'latency_first')
     }
+  })
+
+  test('supports exactly the three same-priority strategies and defines TTFT precisely', () => {
+    assert.deepEqual(samePriorityStrategies, [
+      'weighted_random',
+      'stability_first',
+      'latency_first',
+    ])
+    assert.match(SAME_PRIORITY_STRATEGY_DESCRIPTION_KEYS.latency_first, /TTFT/)
+    assert.match(
+      SAME_PRIORITY_STRATEGY_DESCRIPTION_KEYS.latency_first,
+      /not total response time/
+    )
   })
 
   test('accepts -1 as unlimited retry times and rejects other negative values', () => {

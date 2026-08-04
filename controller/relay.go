@@ -242,6 +242,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		attemptStartedAt := time.Now()
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -252,6 +253,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = geminiRelayHandler(c, relayInfo)
 		default:
 			newAPIError = relayHandler(c, relayInfo)
+		}
+		zeroTokenFailure := newAPIError == nil && common.GetContextKeyBool(c, constant.ContextKeyZeroTokenFailure)
+		if newAPIError == nil || zeroTokenFailure || !types.IsSkipRetryError(newAPIError) {
+			firstResponseMillis := int64(0)
+			if relayInfo.FirstResponseTime.After(attemptStartedAt) {
+				firstResponseMillis = relayInfo.FirstResponseTime.Sub(attemptStartedAt).Milliseconds()
+			} else if newAPIError == nil && !zeroTokenFailure {
+				// Non-stream responses have no earlier token callback; the complete
+				// valid response is their first observable output.
+				firstResponseMillis = time.Since(attemptStartedAt).Milliseconds()
+			}
+			model.RecordChannelSelectionOutcome(channel.Id, relayInfo.OriginModelName, newAPIError == nil && !zeroTokenFailure, firstResponseMillis)
 		}
 
 		if newAPIError == nil {
@@ -333,7 +346,7 @@ func finalizeSuccessfulRelayAttempt(c *gin.Context, channel *model.Channel) {
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey), usingKey, channel.GetAutoBan()), err)
 		return
 	}
-	service.ResetChannelFailCount(channel.Id, usingKey)
+	service.RecordChannelSuccess(channel.Id, usingKey)
 }
 
 var upgrader = websocket.Upgrader{
@@ -703,14 +716,19 @@ func RelayTask(c *gin.Context) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		attemptStartedAt := time.Now()
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
 			retryParam.FinishAttemptTrace(nil, 0, "complete", "success")
-			service.ResetChannelFailCount(channel.Id, common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+			service.RecordChannelSuccess(channel.Id, common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+			model.RecordChannelSelectionOutcome(channel.Id, relayInfo.OriginModelName, true, time.Since(attemptStartedAt).Milliseconds())
 			break
 		}
 
 		taskAPIError := taskErrorAsAPIError(taskErr)
+		if !taskErr.LocalError && service.ShouldDisableChannel(taskAPIError) {
+			model.RecordChannelSelectionOutcome(channel.Id, relayInfo.OriginModelName, false, 0)
+		}
 		retryable := shouldRetryTaskRelay(c, channel.Id, taskErr, 1)
 		willRetry := retryable && retryParam.HasRetryAllowance(true)
 		delay := time.Duration(0)

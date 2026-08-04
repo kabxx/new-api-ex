@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { SettingsPage } from '../components/settings-page'
 import type { ModelSettings } from '../types'
+import { DEFAULT_SAME_PRIORITY_STRATEGY } from './retry-setting-validation'
+import { DEFAULT_AUTO_DISABLE_POLICY } from './routing-reliability-strategy'
 import {
   MODELS_DEFAULT_SECTION,
   getModelsSectionContent,
@@ -79,12 +81,24 @@ const defaultModelSettings: ModelSettings = {
   'retry_setting.jitter_percent': 20,
   'retry_setting.respect_retry_after': false,
   'retry_setting.channel_strategy': 'legacy',
+  'retry_setting.same_priority_strategy': DEFAULT_SAME_PRIORITY_STRATEGY,
   'retry_setting.exhausted_action': 'stop',
   'retry_setting.try_other_keys': false,
   'monitor_setting.auto_test_channel_enabled': false,
   'monitor_setting.auto_test_channel_minutes': 10,
   'monitor_setting.channel_test_mode': 'scheduled_all',
   'monitor_setting.zero_token_as_failure': false,
+  'monitor_setting.auto_disable_strategy': DEFAULT_AUTO_DISABLE_POLICY.strategy,
+  'monitor_setting.auto_disable_window_minutes':
+    DEFAULT_AUTO_DISABLE_POLICY.windowMinutes,
+  'monitor_setting.auto_disable_window_failures':
+    DEFAULT_AUTO_DISABLE_POLICY.windowFailures,
+  'monitor_setting.auto_disable_rate_sample_size':
+    DEFAULT_AUTO_DISABLE_POLICY.rateSampleSize,
+  'monitor_setting.auto_disable_rate_min_samples':
+    DEFAULT_AUTO_DISABLE_POLICY.rateMinSamples,
+  'monitor_setting.auto_disable_rate_threshold_percent':
+    DEFAULT_AUTO_DISABLE_POLICY.rateThresholdPercent,
   'monitor_setting.channel_availability_notify_enabled': false,
   'monitor_setting.channel_availability_notify_recipients': [],
   'channel_affinity_setting.enabled': false,

@@ -86,10 +86,20 @@ import {
 import {
   createRetrySettingSchema,
   createRetryTimesSchema,
+  DEFAULT_SAME_PRIORITY_STRATEGY,
+  SAME_PRIORITY_STRATEGY_DESCRIPTION_KEYS,
   type RetryChannelStrategy,
   type RetryDelayStrategy,
   type RetryExhaustedAction,
+  type SamePriorityStrategy,
 } from './retry-setting-validation'
+import {
+  createAutoDisableStrategySchema,
+  DEFAULT_AUTO_DISABLE_POLICY,
+  MAX_AUTO_DISABLE_OBSERVATIONS,
+  normalizeAutoDisableStrategy,
+  type AutoDisableStrategy,
+} from './routing-reliability-strategy'
 import {
   acquireSubmissionGuard,
   buildChangedOptionPayload,
@@ -134,18 +144,22 @@ const createRoutingReliabilitySchema = (
       AutomaticDisableStatusCodes: z.string(),
       AutomaticRetryStatusCodes: z.string(),
       retry_setting: createRetrySettingSchema(translateValidationMessage),
-      monitor_setting: z
-        .object({
-          auto_test_channel_enabled: z.boolean(),
-          auto_test_channel_minutes: z.coerce
-            .number()
-            .int()
-            .min(1, 'Interval must be at least 1 minute'),
-          channel_test_mode: z.enum(channelTestModes),
-          zero_token_as_failure: z.boolean(),
-          channel_availability_notify_enabled: z.boolean(),
-          channel_availability_notify_recipients: recipientInputSchema,
-        })
+      monitor_setting: createAutoDisableStrategySchema(
+        translateValidationMessage
+      )
+        .and(
+          z.object({
+            auto_test_channel_enabled: z.boolean(),
+            auto_test_channel_minutes: z.coerce
+              .number()
+              .int()
+              .min(1, 'Interval must be at least 1 minute'),
+            channel_test_mode: z.enum(channelTestModes),
+            zero_token_as_failure: z.boolean(),
+            channel_availability_notify_enabled: z.boolean(),
+            channel_availability_notify_recipients: recipientInputSchema,
+          })
+        )
         .superRefine((values, ctx) => {
           if (
             values.channel_availability_notify_enabled &&
@@ -215,12 +229,19 @@ type RoutingReliabilitySectionProps = {
     'retry_setting.jitter_percent': number
     'retry_setting.respect_retry_after': boolean
     'retry_setting.channel_strategy': RetryChannelStrategy
+    'retry_setting.same_priority_strategy': SamePriorityStrategy
     'retry_setting.exhausted_action': RetryExhaustedAction
     'retry_setting.try_other_keys': boolean
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
     'monitor_setting.zero_token_as_failure': boolean
+    'monitor_setting.auto_disable_strategy': AutoDisableStrategy
+    'monitor_setting.auto_disable_window_minutes': number
+    'monitor_setting.auto_disable_window_failures': number
+    'monitor_setting.auto_disable_rate_sample_size': number
+    'monitor_setting.auto_disable_rate_min_samples': number
+    'monitor_setting.auto_disable_rate_threshold_percent': number
     'monitor_setting.channel_availability_notify_enabled': boolean
     'monitor_setting.channel_availability_notify_recipients': unknown
   }
@@ -247,12 +268,19 @@ type NormalizedRoutingReliabilityValues = {
   'retry_setting.jitter_percent': number
   'retry_setting.respect_retry_after': boolean
   'retry_setting.channel_strategy': RetryChannelStrategy
+  'retry_setting.same_priority_strategy': SamePriorityStrategy
   'retry_setting.exhausted_action': RetryExhaustedAction
   'retry_setting.try_other_keys': boolean
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
   'monitor_setting.zero_token_as_failure': boolean
+  'monitor_setting.auto_disable_strategy': AutoDisableStrategy
+  'monitor_setting.auto_disable_window_minutes': number
+  'monitor_setting.auto_disable_window_failures': number
+  'monitor_setting.auto_disable_rate_sample_size': number
+  'monitor_setting.auto_disable_rate_min_samples': number
+  'monitor_setting.auto_disable_rate_threshold_percent': number
   'monitor_setting.channel_availability_notify_enabled': boolean
   'monitor_setting.channel_availability_notify_recipients': string
 }
@@ -267,6 +295,12 @@ function normalizeRetryDelayStrategy(value?: string): RetryDelayStrategy {
 
 function normalizeRetryChannelStrategy(value?: string): RetryChannelStrategy {
   return value === 'same_priority' ? 'same_priority' : 'legacy'
+}
+
+function normalizeSamePriorityStrategy(value?: string): SamePriorityStrategy {
+  return value === 'stability_first' || value === 'latency_first'
+    ? value
+    : DEFAULT_SAME_PRIORITY_STRATEGY
 }
 
 function normalizeRetryExhaustedAction(value?: string): RetryExhaustedAction {
@@ -302,6 +336,9 @@ const buildFormDefaults = (
     channel_strategy: normalizeRetryChannelStrategy(
       defaults['retry_setting.channel_strategy']
     ),
+    same_priority_strategy: normalizeSamePriorityStrategy(
+      defaults['retry_setting.same_priority_strategy']
+    ),
     exhausted_action: normalizeRetryExhaustedAction(
       defaults['retry_setting.exhausted_action']
     ),
@@ -317,6 +354,24 @@ const buildFormDefaults = (
     ),
     zero_token_as_failure:
       defaults['monitor_setting.zero_token_as_failure'] ?? false,
+    auto_disable_strategy: normalizeAutoDisableStrategy(
+      defaults['monitor_setting.auto_disable_strategy']
+    ),
+    auto_disable_window_minutes:
+      defaults['monitor_setting.auto_disable_window_minutes'] ??
+      DEFAULT_AUTO_DISABLE_POLICY.windowMinutes,
+    auto_disable_window_failures:
+      defaults['monitor_setting.auto_disable_window_failures'] ??
+      DEFAULT_AUTO_DISABLE_POLICY.windowFailures,
+    auto_disable_rate_sample_size:
+      defaults['monitor_setting.auto_disable_rate_sample_size'] ??
+      DEFAULT_AUTO_DISABLE_POLICY.rateSampleSize,
+    auto_disable_rate_min_samples:
+      defaults['monitor_setting.auto_disable_rate_min_samples'] ??
+      DEFAULT_AUTO_DISABLE_POLICY.rateMinSamples,
+    auto_disable_rate_threshold_percent:
+      defaults['monitor_setting.auto_disable_rate_threshold_percent'] ??
+      DEFAULT_AUTO_DISABLE_POLICY.rateThresholdPercent,
     channel_availability_notify_enabled:
       defaults['monitor_setting.channel_availability_notify_enabled'] ?? false,
     channel_availability_notify_recipients: formatAvailabilityRecipientInput(
@@ -360,6 +415,9 @@ const normalizeDefaults = (
   'retry_setting.channel_strategy': normalizeRetryChannelStrategy(
     defaults['retry_setting.channel_strategy']
   ),
+  'retry_setting.same_priority_strategy': normalizeSamePriorityStrategy(
+    defaults['retry_setting.same_priority_strategy']
+  ),
   'retry_setting.exhausted_action': normalizeRetryExhaustedAction(
     defaults['retry_setting.exhausted_action']
   ),
@@ -374,6 +432,24 @@ const normalizeDefaults = (
   ),
   'monitor_setting.zero_token_as_failure':
     defaults['monitor_setting.zero_token_as_failure'] ?? false,
+  'monitor_setting.auto_disable_strategy': normalizeAutoDisableStrategy(
+    defaults['monitor_setting.auto_disable_strategy']
+  ),
+  'monitor_setting.auto_disable_window_minutes':
+    defaults['monitor_setting.auto_disable_window_minutes'] ??
+    DEFAULT_AUTO_DISABLE_POLICY.windowMinutes,
+  'monitor_setting.auto_disable_window_failures':
+    defaults['monitor_setting.auto_disable_window_failures'] ??
+    DEFAULT_AUTO_DISABLE_POLICY.windowFailures,
+  'monitor_setting.auto_disable_rate_sample_size':
+    defaults['monitor_setting.auto_disable_rate_sample_size'] ??
+    DEFAULT_AUTO_DISABLE_POLICY.rateSampleSize,
+  'monitor_setting.auto_disable_rate_min_samples':
+    defaults['monitor_setting.auto_disable_rate_min_samples'] ??
+    DEFAULT_AUTO_DISABLE_POLICY.rateMinSamples,
+  'monitor_setting.auto_disable_rate_threshold_percent':
+    defaults['monitor_setting.auto_disable_rate_threshold_percent'] ??
+    DEFAULT_AUTO_DISABLE_POLICY.rateThresholdPercent,
   'monitor_setting.channel_availability_notify_enabled':
     defaults['monitor_setting.channel_availability_notify_enabled'] ?? false,
   'monitor_setting.channel_availability_notify_recipients': JSON.stringify(
@@ -419,6 +495,8 @@ const normalizeFormValues = (
     'retry_setting.respect_retry_after':
       values.retry_setting.respect_retry_after,
     'retry_setting.channel_strategy': values.retry_setting.channel_strategy,
+    'retry_setting.same_priority_strategy':
+      values.retry_setting.same_priority_strategy,
     'retry_setting.exhausted_action': values.retry_setting.exhausted_action,
     'retry_setting.try_other_keys': values.retry_setting.try_other_keys,
     'monitor_setting.auto_test_channel_enabled':
@@ -429,6 +507,18 @@ const normalizeFormValues = (
       values.monitor_setting.channel_test_mode,
     'monitor_setting.zero_token_as_failure':
       values.monitor_setting.zero_token_as_failure,
+    'monitor_setting.auto_disable_strategy':
+      values.monitor_setting.auto_disable_strategy,
+    'monitor_setting.auto_disable_window_minutes':
+      values.monitor_setting.auto_disable_window_minutes,
+    'monitor_setting.auto_disable_window_failures':
+      values.monitor_setting.auto_disable_window_failures,
+    'monitor_setting.auto_disable_rate_sample_size':
+      values.monitor_setting.auto_disable_rate_sample_size,
+    'monitor_setting.auto_disable_rate_min_samples':
+      values.monitor_setting.auto_disable_rate_min_samples,
+    'monitor_setting.auto_disable_rate_threshold_percent':
+      values.monitor_setting.auto_disable_rate_threshold_percent,
     'monitor_setting.channel_availability_notify_enabled':
       availabilityNotification.enabled,
     'monitor_setting.channel_availability_notify_recipients': JSON.stringify(
@@ -478,6 +568,9 @@ export function RoutingReliabilitySection({
   const retryTimeBudget = form.watch('retry_setting.time_budget_seconds')
   const retryDelayStrategy = form.watch('retry_setting.delay_strategy')
   const retryChannelStrategy = form.watch('retry_setting.channel_strategy')
+  const autoDisableStrategy = form.watch(
+    'monitor_setting.auto_disable_strategy'
+  )
   const availabilityNotifyEnabled = form.watch(
     'monitor_setting.channel_availability_notify_enabled'
   )
@@ -843,6 +936,62 @@ export function RoutingReliabilitySection({
                   </FormItem>
                 )}
               />
+
+              {retryChannelStrategy === 'same_priority' && (
+                <FormField
+                  control={form.control}
+                  name='retry_setting.same_priority_strategy'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Same-priority selection')}</FormLabel>
+                      <Select
+                        items={[
+                          {
+                            value: 'weighted_random',
+                            label: t('Weighted random'),
+                          },
+                          {
+                            value: 'stability_first',
+                            label: t('Stability first'),
+                          },
+                          {
+                            value: 'latency_first',
+                            label: t('Latency first'),
+                          },
+                        ]}
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            <SelectItem value='weighted_random'>
+                              {t('Weighted random')}
+                            </SelectItem>
+                            <SelectItem value='stability_first'>
+                              {t('Stability first')}
+                            </SelectItem>
+                            <SelectItem value='latency_first'>
+                              {t('Latency first')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        {t(
+                          SAME_PRIORITY_STRATEGY_DESCRIPTION_KEYS[field.value]
+                        )}{' '}
+                        {t('Channel priority remains a hard boundary.')}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
               {retryChannelStrategy === 'same_priority' && (
                 <FormField
@@ -1291,28 +1440,210 @@ export function RoutingReliabilitySection({
 
               <FormField
                 control={form.control}
-                name='AutoDisableTolerance'
+                name='monitor_setting.auto_disable_strategy'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Failure tolerance')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        min={0}
-                        max={999}
-                        step={1}
-                        {...safeNumberFieldProps(field)}
-                      />
-                    </FormControl>
+                    <FormLabel>{t('Failure disable method')}</FormLabel>
+                    <Select
+                      items={[
+                        {
+                          value: 'consecutive',
+                          label: t('Consecutive failures'),
+                        },
+                        { value: 'window', label: t('Rolling time window') },
+                        {
+                          value: 'failure_rate',
+                          label: t('Recent failure rate'),
+                        },
+                      ]}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='consecutive'>
+                            {t('Consecutive failures')}
+                          </SelectItem>
+                          <SelectItem value='window'>
+                            {t('Rolling time window')}
+                          </SelectItem>
+                          <SelectItem value='failure_rate'>
+                            {t('Recent failure rate')}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
                     <FormDescription>
                       {t(
-                        'Number of consecutive failures before disabling the channel (0 = disable immediately)'
+                        'All methods use the existing classified channel failures; only the trigger calculation changes.'
                       )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
+              {autoDisableStrategy === 'consecutive' && (
+                <FormField
+                  control={form.control}
+                  name='AutoDisableTolerance'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Failure tolerance')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type='number'
+                          min={0}
+                          max={999}
+                          step={1}
+                          {...safeNumberFieldProps(field)}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Number of consecutive failures before disabling the channel (0 = disable immediately)'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {autoDisableStrategy === 'window' && (
+                <>
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.auto_disable_window_minutes'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Failure window (minutes)')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min={1}
+                            max={MAX_AUTO_DISABLE_OBSERVATIONS}
+                            step={1}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Recalculate on each new result and ignore failures older than this rolling window.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.auto_disable_window_failures'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Failures in window')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min={1}
+                            max={MAX_AUTO_DISABLE_OBSERVATIONS}
+                            step={1}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Disable after this many failures within the window.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </>
+              )}
+
+              {autoDisableStrategy === 'failure_rate' && (
+                <>
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.auto_disable_rate_sample_size'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Recent sample size')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min={1}
+                            max={MAX_AUTO_DISABLE_OBSERVATIONS}
+                            step={1}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Number of recent classified requests used for the rate.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.auto_disable_rate_min_samples'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Minimum samples')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min={1}
+                            max={MAX_AUTO_DISABLE_OBSERVATIONS}
+                            step={1}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Do not calculate a disable decision until this many samples exist.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='monitor_setting.auto_disable_rate_threshold_percent'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Failure rate threshold (%)')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min={0.01}
+                            max={100}
+                            step='any'
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Disable when the recent failure rate reaches this percentage.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </>
+              )}
 
               <FormField
                 control={form.control}

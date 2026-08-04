@@ -17,6 +17,12 @@ type MonitorSetting struct {
 	AutoTestChannelMinutes              float64  `json:"auto_test_channel_minutes"`
 	ChannelTestMode                     string   `json:"channel_test_mode"`
 	ZeroTokenAsFailure                  bool     `json:"zero_token_as_failure"`
+	AutoDisableStrategy                 string   `json:"auto_disable_strategy"`
+	AutoDisableWindowMinutes            int      `json:"auto_disable_window_minutes"`
+	AutoDisableWindowFailures           int      `json:"auto_disable_window_failures"`
+	AutoDisableRateSampleSize           int      `json:"auto_disable_rate_sample_size"`
+	AutoDisableRateMinSamples           int      `json:"auto_disable_rate_min_samples"`
+	AutoDisableRateThresholdPercent     float64  `json:"auto_disable_rate_threshold_percent"`
 	ChannelAvailabilityNotifyEnabled    bool     `json:"channel_availability_notify_enabled"`
 	ChannelAvailabilityNotifyRecipients []string `json:"channel_availability_notify_recipients"`
 }
@@ -24,6 +30,12 @@ type MonitorSetting struct {
 const (
 	ChannelTestModeScheduledAll    = "scheduled_all"
 	ChannelTestModePassiveRecovery = "passive_recovery"
+
+	AutoDisableStrategyConsecutive = "consecutive"
+	AutoDisableStrategyWindow      = "window"
+	AutoDisableStrategyFailureRate = "failure_rate"
+
+	MaxAutoDisableWindowSamples = 10000
 )
 
 // 默认配置
@@ -32,6 +44,12 @@ var monitorSetting = MonitorSetting{
 	AutoTestChannelMinutes:              10,
 	ChannelTestMode:                     ChannelTestModeScheduledAll,
 	ZeroTokenAsFailure:                  false,
+	AutoDisableStrategy:                 AutoDisableStrategyConsecutive,
+	AutoDisableWindowMinutes:            10,
+	AutoDisableWindowFailures:           5,
+	AutoDisableRateSampleSize:           20,
+	AutoDisableRateMinSamples:           10,
+	AutoDisableRateThresholdPercent:     60,
 	ChannelAvailabilityNotifyEnabled:    false,
 	ChannelAvailabilityNotifyRecipients: []string{},
 }
@@ -118,6 +136,20 @@ func ValidateMonitorOption(key, value string) error {
 	case "monitor_setting.channel_test_mode":
 		if value != ChannelTestModeScheduledAll && value != ChannelTestModePassiveRecovery {
 			return fmt.Errorf("%s has an invalid mode", key)
+		}
+	case "monitor_setting.auto_disable_strategy":
+		if value != AutoDisableStrategyConsecutive && value != AutoDisableStrategyWindow && value != AutoDisableStrategyFailureRate {
+			return fmt.Errorf("%s has an invalid strategy", key)
+		}
+	case "monitor_setting.auto_disable_window_minutes", "monitor_setting.auto_disable_window_failures", "monitor_setting.auto_disable_rate_sample_size", "monitor_setting.auto_disable_rate_min_samples":
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > MaxAutoDisableWindowSamples {
+			return fmt.Errorf("%s must be an integer between 1 and %d", key, MaxAutoDisableWindowSamples)
+		}
+	case "monitor_setting.auto_disable_rate_threshold_percent":
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 || parsed > 100 {
+			return fmt.Errorf("%s must be a finite number greater than 0 and at most 100", key)
 		}
 	case "monitor_setting.channel_availability_notify_enabled":
 		if _, err := strconv.ParseBool(value); err != nil {

@@ -921,7 +921,7 @@ func TestChannel(c *gin.Context) {
 		})
 		return
 	}
-	service.ResetChannelFailCount(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey))
+	service.RecordChannelSuccess(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -997,7 +997,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		usingKey := common.GetContextKeyString(result.context, constant.ContextKeyChannelKey)
 		if result.localErr == nil && newAPIError == nil {
 			summary.Succeeded++
-			service.ResetChannelFailCount(channel.Id, usingKey)
+			service.RecordChannelSuccess(channel.Id, usingKey)
 		} else {
 			summary.Failed++
 		}
@@ -1014,6 +1014,7 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		// enable channel
 		if result.localErr == nil && !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
 			if service.EnableChannelDeferredAvailability(channel.Id, usingKey, channel.Name) {
+				service.ResetChannelFailCount(channel.Id, usingKey)
 				summary.Enabled++
 				relatedChannels = append(relatedChannels, service.ChannelAvailabilityRelatedChannel{ID: channel.Id, Name: channel.Name})
 			}

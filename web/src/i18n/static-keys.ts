@@ -34,6 +34,9 @@ export const STATIC_I18N_KEYS = [
   'Availability email notifications',
   'Channel health checks',
   'Request retry',
+  'Within the same priority, choose candidates using their configured weights.',
+  'Within the same priority, prefer a higher recent success rate; near-equal candidates use weighted random.',
+  'Within the same priority, prefer a lower smoothed time to first valid upstream output or token (TTFT), not total response time; near-equal candidates use weighted random.',
 
   // System settings sidebar
   'System Administration',

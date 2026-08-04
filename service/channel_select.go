@@ -170,6 +170,7 @@ func (p *RetryParam) selectSamePriorityInGroup(group string) (*model.Channel, bo
 			TriedKeys:           p.TriedKeys,
 			UnavailableChannels: p.UnavailableChannels,
 			TryOtherKeys:        p.Setting.TryOtherKeys,
+			SelectionStrategy:   p.Setting.SamePriorityStrategy,
 		})
 		if err != nil {
 			return nil, false, err

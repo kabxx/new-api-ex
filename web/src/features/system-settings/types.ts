@@ -267,12 +267,25 @@ export type ModelSettings = {
   'retry_setting.jitter_percent': number
   'retry_setting.respect_retry_after': boolean
   'retry_setting.channel_strategy': 'legacy' | 'same_priority'
+  'retry_setting.same_priority_strategy':
+    | 'weighted_random'
+    | 'stability_first'
+    | 'latency_first'
   'retry_setting.exhausted_action': 'stop' | 'cycle'
   'retry_setting.try_other_keys': boolean
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': 'scheduled_all' | 'passive_recovery'
   'monitor_setting.zero_token_as_failure': boolean
+  'monitor_setting.auto_disable_strategy':
+    | 'consecutive'
+    | 'window'
+    | 'failure_rate'
+  'monitor_setting.auto_disable_window_minutes': number
+  'monitor_setting.auto_disable_window_failures': number
+  'monitor_setting.auto_disable_rate_sample_size': number
+  'monitor_setting.auto_disable_rate_min_samples': number
+  'monitor_setting.auto_disable_rate_threshold_percent': number
   'monitor_setting.channel_availability_notify_enabled': boolean
   'monitor_setting.channel_availability_notify_recipients': string[]
   'channel_affinity_setting.enabled': boolean

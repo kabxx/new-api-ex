@@ -96,6 +96,8 @@ const MODELS_SECTIONS = [
             settings['retry_setting.respect_retry_after'],
           'retry_setting.channel_strategy':
             settings['retry_setting.channel_strategy'],
+          'retry_setting.same_priority_strategy':
+            settings['retry_setting.same_priority_strategy'],
           'retry_setting.exhausted_action':
             settings['retry_setting.exhausted_action'],
           'retry_setting.try_other_keys':
@@ -108,6 +110,18 @@ const MODELS_SECTIONS = [
             settings['monitor_setting.channel_test_mode'],
           'monitor_setting.zero_token_as_failure':
             settings['monitor_setting.zero_token_as_failure'],
+          'monitor_setting.auto_disable_strategy':
+            settings['monitor_setting.auto_disable_strategy'],
+          'monitor_setting.auto_disable_window_minutes':
+            settings['monitor_setting.auto_disable_window_minutes'],
+          'monitor_setting.auto_disable_window_failures':
+            settings['monitor_setting.auto_disable_window_failures'],
+          'monitor_setting.auto_disable_rate_sample_size':
+            settings['monitor_setting.auto_disable_rate_sample_size'],
+          'monitor_setting.auto_disable_rate_min_samples':
+            settings['monitor_setting.auto_disable_rate_min_samples'],
+          'monitor_setting.auto_disable_rate_threshold_percent':
+            settings['monitor_setting.auto_disable_rate_threshold_percent'],
           'monitor_setting.channel_availability_notify_enabled':
             settings['monitor_setting.channel_availability_notify_enabled'],
           'monitor_setting.channel_availability_notify_recipients':

@@ -16,6 +16,10 @@ const (
 	RetryChannelLegacy       = "legacy"
 	RetryChannelSamePriority = "same_priority"
 
+	SamePriorityWeightedRandom = "weighted_random"
+	SamePriorityStabilityFirst = "stability_first"
+	SamePriorityLatencyFirst   = "latency_first"
+
 	RetryExhaustedStop  = "stop"
 	RetryExhaustedCycle = "cycle"
 )
@@ -29,6 +33,7 @@ type RetrySetting struct {
 	JitterPercent                       float64 `json:"jitter_percent"`
 	RespectRetryAfter                   bool    `json:"respect_retry_after"`
 	ChannelStrategy                     string  `json:"channel_strategy"`
+	SamePriorityStrategy                string  `json:"same_priority_strategy"`
 	ExhaustedAction                     string  `json:"exhausted_action"`
 	TryOtherKeys                        bool    `json:"try_other_keys"`
 }
@@ -42,6 +47,7 @@ var retrySetting = RetrySetting{
 	JitterPercent:                       20,
 	RespectRetryAfter:                   false,
 	ChannelStrategy:                     RetryChannelLegacy,
+	SamePriorityStrategy:                SamePriorityWeightedRandom,
 	ExhaustedAction:                     RetryExhaustedStop,
 	TryOtherKeys:                        false,
 }
@@ -81,6 +87,10 @@ func ValidateRetryOption(key, value string) error {
 	case "retry_setting.channel_strategy":
 		if value != RetryChannelLegacy && value != RetryChannelSamePriority {
 			return fmt.Errorf("%s must be legacy or same_priority", key)
+		}
+	case "retry_setting.same_priority_strategy":
+		if value != SamePriorityWeightedRandom && value != SamePriorityStabilityFirst && value != SamePriorityLatencyFirst {
+			return fmt.Errorf("%s must be weighted_random, stability_first, or latency_first", key)
 		}
 	case "retry_setting.exhausted_action":
 		if value != RetryExhaustedStop && value != RetryExhaustedCycle {

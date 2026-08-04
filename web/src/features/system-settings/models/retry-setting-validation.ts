@@ -28,6 +28,23 @@ export type RetryDelayStrategy = (typeof retryDelayStrategies)[number]
 export const retryChannelStrategies = ['legacy', 'same_priority'] as const
 export type RetryChannelStrategy = (typeof retryChannelStrategies)[number]
 
+export const samePriorityStrategies = [
+  'weighted_random',
+  'stability_first',
+  'latency_first',
+] as const
+export type SamePriorityStrategy = (typeof samePriorityStrategies)[number]
+export const DEFAULT_SAME_PRIORITY_STRATEGY: SamePriorityStrategy =
+  'weighted_random'
+export const SAME_PRIORITY_STRATEGY_DESCRIPTION_KEYS = {
+  weighted_random:
+    'Within the same priority, choose candidates using their configured weights.',
+  stability_first:
+    'Within the same priority, prefer a higher recent success rate; near-equal candidates use weighted random.',
+  latency_first:
+    'Within the same priority, prefer a lower smoothed time to first valid upstream output or token (TTFT), not total response time; near-equal candidates use weighted random.',
+} as const satisfies Record<SamePriorityStrategy, string>
+
 export const retryExhaustedActions = ['stop', 'cycle'] as const
 export type RetryExhaustedAction = (typeof retryExhaustedActions)[number]
 
@@ -79,6 +96,7 @@ export function createRetrySettingSchema(
     jitter_percent: createFiniteNonNegativeNumberSchema(translate),
     respect_retry_after: z.boolean(),
     channel_strategy: z.enum(retryChannelStrategies),
+    same_priority_strategy: z.enum(samePriorityStrategies),
     exhausted_action: z.enum(retryExhaustedActions),
     try_other_keys: z.boolean(),
   })

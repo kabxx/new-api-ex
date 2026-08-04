@@ -15,6 +15,7 @@ type RetryChannelSelectionOptions struct {
 	TriedKeys           map[int]map[int]struct{}
 	UnavailableChannels map[int]struct{}
 	TryOtherKeys        bool
+	SelectionStrategy   string
 }
 
 // SelectSamePriorityChannel selects without replacement at one priority. The
@@ -59,7 +60,7 @@ func SelectSamePriorityChannel(group, modelName, requestPath string, options Ret
 	if len(eligible) == 0 {
 		return nil, len(priorities), nil
 	}
-	return weightedRetryChannel(eligible), len(priorities), nil
+	return chooseSamePriorityChannel(eligible, modelName, options.SelectionStrategy), len(priorities), nil
 }
 
 func RetryChannelPriorityIndex(group, modelName, requestPath string, priority int64) (int, int, error) {
