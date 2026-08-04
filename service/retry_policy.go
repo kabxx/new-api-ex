@@ -88,12 +88,9 @@ func (p *RetryParam) ensurePolicy() {
 	}
 }
 
-func (p *RetryParam) UnlimitedForTask(isTask bool) bool {
+func (p *RetryParam) UnlimitedForTask(_ bool) bool {
 	p.ensurePolicy()
-	if !p.Setting.Unlimited {
-		return false
-	}
-	return !isTask || p.Setting.UnlimitedTaskRetries
+	return common.RetryTimes == -1
 }
 
 func (p *RetryParam) HasRetryAllowance(isTask bool) bool {

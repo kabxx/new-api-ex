@@ -80,7 +80,6 @@ const MODELS_SECTIONS = [
           AutomaticDisableKeywords: settings.AutomaticDisableKeywords,
           AutomaticDisableStatusCodes: settings.AutomaticDisableStatusCodes,
           AutomaticRetryStatusCodes: settings.AutomaticRetryStatusCodes,
-          'retry_setting.unlimited': settings['retry_setting.unlimited'],
           'retry_setting.time_budget_seconds':
             settings['retry_setting.time_budget_seconds'],
           'retry_setting.delay_strategy':
@@ -101,8 +100,6 @@ const MODELS_SECTIONS = [
             settings['retry_setting.exhausted_action'],
           'retry_setting.try_other_keys':
             settings['retry_setting.try_other_keys'],
-          'retry_setting.unlimited_task_retries':
-            settings['retry_setting.unlimited_task_retries'],
           'monitor_setting.auto_test_channel_enabled':
             settings['monitor_setting.auto_test_channel_enabled'],
           'monitor_setting.auto_test_channel_minutes':

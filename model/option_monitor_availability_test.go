@@ -229,7 +229,6 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 			"channel_availability_notify_recipients": string(monitorRecipients),
 		})
 		config.GlobalConfig.Update("retry_setting", map[string]string{
-			"unlimited":                           strconv.FormatBool(previousRetry.Unlimited),
 			"time_budget_seconds":                 strconv.FormatInt(previousRetry.TimeBudgetSeconds, 10),
 			"delay_strategy":                      previousRetry.DelayStrategy,
 			"fixed_delay_milliseconds":            strconv.FormatInt(previousRetry.FixedDelayMilliseconds, 10),
@@ -240,7 +239,6 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 			"channel_strategy":                    previousRetry.ChannelStrategy,
 			"exhausted_action":                    previousRetry.ExhaustedAction,
 			"try_other_keys":                      strconv.FormatBool(previousRetry.TryOtherKeys),
-			"unlimited_task_retries":              strconv.FormatBool(previousRetry.UnlimitedTaskRetries),
 		})
 	})
 
@@ -266,7 +264,6 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 		"AutomaticDisableKeywords":                               "Quota exhausted\nPermission denied",
 		"AutomaticDisableStatusCodes":                            "401,429,500-599",
 		"AutomaticRetryStatusCodes":                              "429,500-503",
-		"retry_setting.unlimited":                                "true",
 		"retry_setting.time_budget_seconds":                      "30",
 		"retry_setting.delay_strategy":                           operation_setting.RetryDelayExponential,
 		"retry_setting.fixed_delay_milliseconds":                 "15",
@@ -277,7 +274,6 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 		"retry_setting.channel_strategy":                         operation_setting.RetryChannelSamePriority,
 		"retry_setting.exhausted_action":                         operation_setting.RetryExhaustedCycle,
 		"retry_setting.try_other_keys":                           "true",
-		"retry_setting.unlimited_task_retries":                   "true",
 		"monitor_setting.auto_test_channel_enabled":              "true",
 		"monitor_setting.auto_test_channel_minutes":              "5",
 		"monitor_setting.channel_test_mode":                      operation_setting.ChannelTestModePassiveRecovery,
@@ -285,12 +281,12 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 		"monitor_setting.channel_availability_notify_enabled":    "true",
 		"monitor_setting.channel_availability_notify_recipients": `["Admin@Example.com","admin@example.com"]`,
 	}
-	require.Len(t, values, 26)
+	require.Len(t, values, 24)
 	require.NoError(t, UpdateRoutingReliabilityOptionsBulk(values))
 
 	var count int64
 	require.NoError(t, db.Model(&Option{}).Count(&count).Error)
-	assert.Equal(t, int64(26), count)
+	assert.Equal(t, int64(24), count)
 	assert.Equal(t, 17, common.RetryTimes)
 	assert.Equal(t, 0.75, common.ChannelDisableThreshold)
 	assert.True(t, common.AutomaticDisableChannelEnabled)
@@ -300,7 +296,6 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 	assert.Equal(t, []operation_setting.StatusCodeRange{{Start: 401, End: 401}, {Start: 429, End: 429}, {Start: 500, End: 599}}, operation_setting.AutomaticDisableStatusCodeRanges)
 
 	retry := operation_setting.GetRetrySetting()
-	assert.True(t, retry.Unlimited)
 	assert.Equal(t, int64(30), retry.TimeBudgetSeconds)
 	assert.Equal(t, operation_setting.RetryDelayExponential, retry.DelayStrategy)
 	assert.Equal(t, operation_setting.RetryChannelSamePriority, retry.ChannelStrategy)

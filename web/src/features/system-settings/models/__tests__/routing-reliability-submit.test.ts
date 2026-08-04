@@ -61,7 +61,6 @@ describe('routing reliability bulk submission', () => {
   test('only submits the explicit routing reliability option whitelist', () => {
     const current = {
       RetryTimes: 20,
-      'retry_setting.unlimited': undefined,
       unrelated_option: 'must-not-leak',
     }
     const baseline = { RetryTimes: 10 }
@@ -69,7 +68,7 @@ describe('routing reliability bulk submission', () => {
     assert.deepEqual(buildChangedOptionPayload(current, baseline), {
       RetryTimes: '20',
     })
-    assert.equal(ROUTING_RELIABILITY_OPTION_KEYS.length, 26)
+    assert.equal(ROUTING_RELIABILITY_OPTION_KEYS.length, 24)
     assert.equal(
       new Set(ROUTING_RELIABILITY_OPTION_KEYS).size,
       ROUTING_RELIABILITY_OPTION_KEYS.length

@@ -21,7 +21,6 @@ const (
 )
 
 type RetrySetting struct {
-	Unlimited                           bool    `json:"unlimited"`
 	TimeBudgetSeconds                   int64   `json:"time_budget_seconds"`
 	DelayStrategy                       string  `json:"delay_strategy"`
 	FixedDelayMilliseconds              int64   `json:"fixed_delay_milliseconds"`
@@ -32,11 +31,9 @@ type RetrySetting struct {
 	ChannelStrategy                     string  `json:"channel_strategy"`
 	ExhaustedAction                     string  `json:"exhausted_action"`
 	TryOtherKeys                        bool    `json:"try_other_keys"`
-	UnlimitedTaskRetries                bool    `json:"unlimited_task_retries"`
 }
 
 var retrySetting = RetrySetting{
-	Unlimited:                           false,
 	TimeBudgetSeconds:                   0,
 	DelayStrategy:                       RetryDelayImmediate,
 	FixedDelayMilliseconds:              0,
@@ -47,7 +44,6 @@ var retrySetting = RetrySetting{
 	ChannelStrategy:                     RetryChannelLegacy,
 	ExhaustedAction:                     RetryExhaustedStop,
 	TryOtherKeys:                        false,
-	UnlimitedTaskRetries:                false,
 }
 
 func init() {
@@ -64,7 +60,7 @@ func GetRetrySetting() RetrySetting {
 
 func ValidateRetryOption(key, value string) error {
 	switch key {
-	case "retry_setting.unlimited", "retry_setting.respect_retry_after", "retry_setting.try_other_keys", "retry_setting.unlimited_task_retries":
+	case "retry_setting.respect_retry_after", "retry_setting.try_other_keys":
 		if _, err := strconv.ParseBool(value); err != nil {
 			return fmt.Errorf("%s must be a boolean", key)
 		}

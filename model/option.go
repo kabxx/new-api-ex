@@ -27,13 +27,13 @@ var routingReliabilityBulkOptionKeys = map[string]struct{}{
 	"AutomaticDisableChannelEnabled": {}, "AutoDisableTolerance": {},
 	"AutomaticEnableChannelEnabled": {}, "AutomaticDisableKeywords": {},
 	"AutomaticDisableStatusCodes": {}, "AutomaticRetryStatusCodes": {},
-	"retry_setting.unlimited": {}, "retry_setting.time_budget_seconds": {},
-	"retry_setting.delay_strategy": {}, "retry_setting.fixed_delay_milliseconds": {},
+	"retry_setting.time_budget_seconds": {},
+	"retry_setting.delay_strategy":      {}, "retry_setting.fixed_delay_milliseconds": {},
 	"retry_setting.exponential_base_delay_milliseconds": {},
 	"retry_setting.exponential_max_delay_milliseconds":  {},
 	"retry_setting.jitter_percent":                      {}, "retry_setting.respect_retry_after": {},
 	"retry_setting.channel_strategy": {}, "retry_setting.exhausted_action": {},
-	"retry_setting.try_other_keys": {}, "retry_setting.unlimited_task_retries": {},
+	"retry_setting.try_other_keys":              {},
 	"monitor_setting.auto_test_channel_enabled": {},
 	"monitor_setting.auto_test_channel_minutes": {},
 	"monitor_setting.channel_test_mode":         {}, "monitor_setting.zero_token_as_failure": {},
@@ -262,8 +262,8 @@ func parseAutoDisableTolerance(value string) (int, error) {
 
 func parseRetryTimes(value string) (int, error) {
 	parsed, err := strconv.ParseInt(value, 10, strconv.IntSize)
-	if err != nil || parsed < 0 {
-		return 0, fmt.Errorf("RetryTimes must be a non-negative integer")
+	if err != nil || parsed < -1 {
+		return 0, fmt.Errorf("RetryTimes must be -1 or a non-negative integer")
 	}
 	return int(parsed), nil
 }

@@ -22,8 +22,9 @@ import { describe, test } from 'node:test'
 import {
   createFiniteNonNegativeNumberSchema,
   createRetrySettingSchema,
+  createRetryTimesSchema,
   createSafeNonNegativeIntegerSchema,
-} from '../retry-setting-validation'
+} from '../retry-setting-validation.ts'
 
 const translate = (key: string) => `translated:${key}`
 
@@ -48,7 +49,6 @@ describe('retry setting validation', () => {
 
   test('keeps inactive delay fields instead of discarding their values', () => {
     const result = createRetrySettingSchema(translate).safeParse({
-      unlimited: true,
       time_budget_seconds: 0,
       delay_strategy: 'immediate',
       fixed_delay_milliseconds: 750,
@@ -59,7 +59,6 @@ describe('retry setting validation', () => {
       channel_strategy: 'legacy',
       exhausted_action: 'stop',
       try_other_keys: true,
-      unlimited_task_retries: false,
     })
 
     assert.equal(result.success, true)
@@ -69,6 +68,15 @@ describe('retry setting validation', () => {
       assert.equal(result.data.exponential_max_delay_milliseconds, 5000)
       assert.equal(result.data.jitter_percent, 12.5)
     }
+  })
+
+  test('accepts -1 as unlimited retry times and rejects other negative values', () => {
+    const schema = createRetryTimesSchema(translate)
+
+    assert.equal(schema.safeParse(-1).success, true)
+    assert.equal(schema.safeParse(0).success, true)
+    assert.equal(schema.safeParse(-2).success, false)
+    assert.equal(schema.safeParse(Number.MAX_SAFE_INTEGER + 1).success, false)
   })
 
   test('accepts decimal jitter but rejects non-finite and negative values', () => {

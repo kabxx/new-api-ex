@@ -46,6 +46,17 @@ export function createSafeNonNegativeIntegerSchema(
     )
 }
 
+export function createRetryTimesSchema(translate: TranslateValidationMessage) {
+  const message = translate('Enter -1 or a non-negative safe integer')
+  return z.coerce
+    .number({ error: message })
+    .refine(
+      (value) =>
+        Number.isFinite(value) && Number.isSafeInteger(value) && value >= -1,
+      message
+    )
+}
+
 export function createFiniteNonNegativeNumberSchema(
   translate: TranslateValidationMessage
 ) {
@@ -60,7 +71,6 @@ export function createRetrySettingSchema(
 ) {
   const safeInteger = createSafeNonNegativeIntegerSchema(translate)
   return z.object({
-    unlimited: z.boolean(),
     time_budget_seconds: safeInteger,
     delay_strategy: z.enum(retryDelayStrategies),
     fixed_delay_milliseconds: safeInteger,
@@ -71,6 +81,5 @@ export function createRetrySettingSchema(
     channel_strategy: z.enum(retryChannelStrategies),
     exhausted_action: z.enum(retryExhaustedActions),
     try_other_keys: z.boolean(),
-    unlimited_task_retries: z.boolean(),
   })
 }

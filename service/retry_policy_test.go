@@ -45,7 +45,7 @@ func TestCalculateRetryDelayStrategiesAndRetryAfter(t *testing.T) {
 	assert.LessOrEqual(t, calculateRetryDelay(setting, math.MaxInt, 0, 1), time.Duration(math.MaxInt64))
 }
 
-func TestRetryAllowanceSeparatesOrdinaryAndTaskUnlimited(t *testing.T) {
+func TestRetryAllowanceUsesNegativeRetryTimesForAllRequestTypes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -56,10 +56,8 @@ func TestRetryAllowanceSeparatesOrdinaryAndTaskUnlimited(t *testing.T) {
 	p := NewRetryParam(c, "default", "model", "/v1/responses")
 	p.SetRetry(10)
 	assert.False(t, p.HasRetryAllowance(false))
-	p.Setting.Unlimited = true
+	common.RetryTimes = -1
 	assert.True(t, p.HasRetryAllowance(false))
-	assert.False(t, p.HasRetryAllowance(true))
-	p.Setting.UnlimitedTaskRetries = true
 	assert.True(t, p.HasRetryAllowance(true))
 }
 

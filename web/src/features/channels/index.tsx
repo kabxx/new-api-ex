@@ -49,8 +49,11 @@ export function Channels() {
     staleTime: 5 * 60 * 1000,
   })
   const retryTimes = channelOpsQuery.data?.data?.retry_times
-  const retryLabel =
-    typeof retryTimes === 'number' ? `${t('Max Retries')}: ${retryTimes}` : null
+  let retryLabel: string | null = null
+  if (typeof retryTimes === 'number') {
+    const retryValue = retryTimes === -1 ? t('Unlimited') : retryTimes
+    retryLabel = `${t('Max Retries')}: ${retryValue}`
+  }
   let retryBadge = null
   if (retryLabel) {
     retryBadge = isRoot ? (

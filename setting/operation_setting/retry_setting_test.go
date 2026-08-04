@@ -12,7 +12,6 @@ import (
 
 func TestRetrySettingDefaultsPreserveLegacyBehavior(t *testing.T) {
 	setting := GetRetrySetting()
-	assert.False(t, setting.Unlimited)
 	assert.Zero(t, setting.TimeBudgetSeconds)
 	assert.Equal(t, RetryDelayImmediate, setting.DelayStrategy)
 	assert.Zero(t, setting.FixedDelayMilliseconds)
@@ -23,7 +22,6 @@ func TestRetrySettingDefaultsPreserveLegacyBehavior(t *testing.T) {
 	assert.Equal(t, RetryChannelLegacy, setting.ChannelStrategy)
 	assert.Equal(t, RetryExhaustedStop, setting.ExhaustedAction)
 	assert.False(t, setting.TryOtherKeys)
-	assert.False(t, setting.UnlimitedTaskRetries)
 }
 
 func TestValidateRetryOptionUsesTechnicalBoundsOnly(t *testing.T) {

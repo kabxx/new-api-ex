@@ -85,7 +85,7 @@ import {
 } from './channel-availability-notification'
 import {
   createRetrySettingSchema,
-  createSafeNonNegativeIntegerSchema,
+  createRetryTimesSchema,
   type RetryChannelStrategy,
   type RetryDelayStrategy,
   type RetryExhaustedAction,
@@ -125,9 +125,7 @@ const createRoutingReliabilitySchema = (
 
   return z
     .object({
-      RetryTimes: createSafeNonNegativeIntegerSchema(
-        translateValidationMessage
-      ),
+      RetryTimes: createRetryTimesSchema(translateValidationMessage),
       ChannelDisableThreshold: numericString,
       AutomaticDisableChannelEnabled: z.boolean(),
       AutoDisableTolerance: z.coerce.number().int().min(0).max(999),
@@ -209,7 +207,6 @@ type RoutingReliabilitySectionProps = {
     AutomaticDisableKeywords: string
     AutomaticDisableStatusCodes: string
     AutomaticRetryStatusCodes: string
-    'retry_setting.unlimited': boolean
     'retry_setting.time_budget_seconds': number
     'retry_setting.delay_strategy': RetryDelayStrategy
     'retry_setting.fixed_delay_milliseconds': number
@@ -220,7 +217,6 @@ type RoutingReliabilitySectionProps = {
     'retry_setting.channel_strategy': RetryChannelStrategy
     'retry_setting.exhausted_action': RetryExhaustedAction
     'retry_setting.try_other_keys': boolean
-    'retry_setting.unlimited_task_retries': boolean
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
@@ -243,7 +239,6 @@ type NormalizedRoutingReliabilityValues = {
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
   AutomaticRetryStatusCodes: string
-  'retry_setting.unlimited': boolean
   'retry_setting.time_budget_seconds': number
   'retry_setting.delay_strategy': RetryDelayStrategy
   'retry_setting.fixed_delay_milliseconds': number
@@ -254,7 +249,6 @@ type NormalizedRoutingReliabilityValues = {
   'retry_setting.channel_strategy': RetryChannelStrategy
   'retry_setting.exhausted_action': RetryExhaustedAction
   'retry_setting.try_other_keys': boolean
-  'retry_setting.unlimited_task_retries': boolean
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
@@ -293,7 +287,6 @@ const buildFormDefaults = (
   AutomaticDisableStatusCodes: defaults.AutomaticDisableStatusCodes ?? '',
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
   retry_setting: {
-    unlimited: defaults['retry_setting.unlimited'] ?? false,
     time_budget_seconds: defaults['retry_setting.time_budget_seconds'] ?? 0,
     delay_strategy: normalizeRetryDelayStrategy(
       defaults['retry_setting.delay_strategy']
@@ -313,8 +306,6 @@ const buildFormDefaults = (
       defaults['retry_setting.exhausted_action']
     ),
     try_other_keys: defaults['retry_setting.try_other_keys'] ?? false,
-    unlimited_task_retries:
-      defaults['retry_setting.unlimited_task_retries'] ?? false,
   },
   monitor_setting: {
     auto_test_channel_enabled:
@@ -351,7 +342,6 @@ const normalizeDefaults = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticRetryStatusCodes ?? ''
   ).normalized,
-  'retry_setting.unlimited': defaults['retry_setting.unlimited'] ?? false,
   'retry_setting.time_budget_seconds':
     defaults['retry_setting.time_budget_seconds'] ?? 0,
   'retry_setting.delay_strategy': normalizeRetryDelayStrategy(
@@ -375,8 +365,6 @@ const normalizeDefaults = (
   ),
   'retry_setting.try_other_keys':
     defaults['retry_setting.try_other_keys'] ?? false,
-  'retry_setting.unlimited_task_retries':
-    defaults['retry_setting.unlimited_task_retries'] ?? false,
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -418,7 +406,6 @@ const normalizeFormValues = (
     AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
       values.AutomaticRetryStatusCodes
     ).normalized,
-    'retry_setting.unlimited': values.retry_setting.unlimited,
     'retry_setting.time_budget_seconds':
       values.retry_setting.time_budget_seconds,
     'retry_setting.delay_strategy': values.retry_setting.delay_strategy,
@@ -434,8 +421,6 @@ const normalizeFormValues = (
     'retry_setting.channel_strategy': values.retry_setting.channel_strategy,
     'retry_setting.exhausted_action': values.retry_setting.exhausted_action,
     'retry_setting.try_other_keys': values.retry_setting.try_other_keys,
-    'retry_setting.unlimited_task_retries':
-      values.retry_setting.unlimited_task_retries,
     'monitor_setting.auto_test_channel_enabled':
       values.monitor_setting.auto_test_channel_enabled,
     'monitor_setting.auto_test_channel_minutes':
@@ -490,7 +475,6 @@ export function RoutingReliabilitySection({
   const autoRetryStatusCodes = form.watch('AutomaticRetryStatusCodes')
   const channelTestMode = form.watch('monitor_setting.channel_test_mode')
   const retryTimes = form.watch('RetryTimes')
-  const retryUnlimited = form.watch('retry_setting.unlimited')
   const retryTimeBudget = form.watch('retry_setting.time_budget_seconds')
   const retryDelayStrategy = form.watch('retry_setting.delay_strategy')
   const retryChannelStrategy = form.watch('retry_setting.channel_strategy')
@@ -603,50 +587,27 @@ export function RoutingReliabilitySection({
             <div className='grid min-w-0 gap-6 lg:grid-cols-2'>
               <FormField
                 control={form.control}
-                name='retry_setting.unlimited'
+                name='RetryTimes'
                 render={({ field }) => (
-                  <SettingsSwitchItem className='lg:col-span-2'>
-                    <SettingsSwitchContent>
-                      <FormLabel>{t('Unlimited retries')}</FormLabel>
-                      <FormDescription>
-                        {t(
-                          'Keep retrying eligible requests until the time budget or candidate policy stops the chain.'
-                        )}
-                      </FormDescription>
-                    </SettingsSwitchContent>
+                  <FormItem>
+                    <FormLabel>{t('Retry Times')}</FormLabel>
                     <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
+                      <Input
+                        type='number'
+                        min='-1'
+                        step='1'
+                        {...safeNumberFieldProps(field)}
                       />
                     </FormControl>
-                  </SettingsSwitchItem>
+                    <FormDescription>
+                      {t(
+                        'Extra attempts after the initial request; -1 means unlimited'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
                 )}
               />
-
-              {!retryUnlimited && (
-                <FormField
-                  control={form.control}
-                  name='RetryTimes'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Retry Times')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          type='number'
-                          min='0'
-                          step='1'
-                          {...safeNumberFieldProps(field)}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {t('Extra attempts after the initial request')}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              )}
 
               <FormField
                 control={form.control}
@@ -952,33 +913,6 @@ export function RoutingReliabilitySection({
                 )}
               />
 
-              {retryUnlimited && (
-                <FormField
-                  control={form.control}
-                  name='retry_setting.unlimited_task_retries'
-                  render={({ field }) => (
-                    <SettingsSwitchItem className='lg:col-span-2'>
-                      <SettingsSwitchContent>
-                        <FormLabel>
-                          {t('Allow unlimited async task retries')}
-                        </FormLabel>
-                        <FormDescription>
-                          {t(
-                            'Advanced: repeated task submission can create duplicate work and charges.'
-                          )}
-                        </FormDescription>
-                      </SettingsSwitchContent>
-                      <FormControl>
-                        <Switch
-                          checked={field.value}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </SettingsSwitchItem>
-                  )}
-                />
-              )}
-
               <FormField
                 control={form.control}
                 name='AutomaticRetryStatusCodes'
@@ -1009,7 +943,7 @@ export function RoutingReliabilitySection({
                 )}
               />
 
-              {retryUnlimited && retryTimeBudget === 0 && (
+              {retryTimes === -1 && retryTimeBudget === 0 && (
                 <Alert className='lg:col-span-2'>
                   <AlertDescription>
                     {t(
@@ -1020,7 +954,7 @@ export function RoutingReliabilitySection({
               )}
 
               {retryDelayStrategy === 'immediate' &&
-                (retryUnlimited || Number(retryTimes) > 10) && (
+                (retryTimes === -1 || Number(retryTimes) > 10) && (
                   <Alert className='lg:col-span-2'>
                     <AlertDescription>
                       {t(
@@ -1215,6 +1149,8 @@ export function RoutingReliabilitySection({
                 )}
               />
             </div>
+
+            <Separator />
 
             <div className='flex min-w-0 flex-col gap-3'>
               <h5 className='text-sm font-medium'>

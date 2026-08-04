@@ -34,9 +34,14 @@ func TestRetryOptionValidationPrecedesBulkPersistence(t *testing.T) {
 		common.OptionMapRWMutex.Unlock()
 	})
 
-	for _, value := range []string{"-1", "1.5", "invalid", "999999999999999999999999"} {
+	for _, value := range []string{"1.5", "invalid", "999999999999999999999999"} {
 		assert.Error(t, UpdateOption("RetryTimes", value))
 	}
+	assert.Error(t, UpdateOption("RetryTimes", "-2"))
+	assert.Error(t, UpdateOption("retry_setting.unlimited", "true"))
+	assert.Error(t, UpdateOption("retry_setting.unlimited_task_retries", "true"))
+	require.NoError(t, UpdateOption("RetryTimes", "-1"))
+	assert.Equal(t, -1, common.RetryTimes)
 	require.NoError(t, UpdateOption("RetryTimes", "10000"))
 	assert.Equal(t, 10000, common.RetryTimes)
 

@@ -333,7 +333,6 @@ export function ModelMutateDrawer({
       AutomaticDisableStatusCodes: '401',
       AutomaticRetryStatusCodes:
         '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
-      'retry_setting.unlimited': false,
       'retry_setting.time_budget_seconds': 0,
       'retry_setting.delay_strategy': 'immediate',
       'retry_setting.fixed_delay_milliseconds': 0,
@@ -344,7 +343,6 @@ export function ModelMutateDrawer({
       'retry_setting.channel_strategy': 'legacy',
       'retry_setting.exhausted_action': 'stop',
       'retry_setting.try_other_keys': false,
-      'retry_setting.unlimited_task_retries': false,
       'monitor_setting.auto_test_channel_enabled': false,
       'monitor_setting.auto_test_channel_minutes': 10,
       'monitor_setting.channel_test_mode': 'scheduled_all',
