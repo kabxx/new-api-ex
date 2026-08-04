@@ -81,16 +81,17 @@ type TokenCountMeta struct {
 }
 
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
-	StartTime         time.Time
-	FirstResponseTime time.Time
-	isFirstResponse   bool
+	TokenId                  int
+	TokenKey                 string
+	TokenGroup               string
+	UserId                   int
+	UsingGroup               string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup                string // 用户所在分组
+	TokenUnlimited           bool
+	StartTime                time.Time
+	FirstResponseTime        time.Time
+	isFirstResponse          bool
+	attemptFirstResponseTime time.Time
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -810,9 +811,33 @@ func (info *RelayInfo) ConvOptions() *convmeta.Options {
 
 func (info *RelayInfo) SetFirstResponseTime() {
 	if info.isFirstResponse {
-		info.FirstResponseTime = time.Now()
+		now := time.Now()
+		info.attemptFirstResponseTime = now
+		if info.FirstResponseTime.IsZero() || !info.FirstResponseTime.After(info.StartTime) {
+			info.FirstResponseTime = now
+		}
 		info.isFirstResponse = false
 	}
+}
+
+// BeginAttempt resets only the per-upstream-attempt response marker. The
+// request-level FirstResponseTime remains the first response observed for the
+// whole client request and is still used by billing and logs.
+func (info *RelayInfo) BeginAttempt() {
+	if info == nil {
+		return
+	}
+	info.attemptFirstResponseTime = time.Time{}
+	info.isFirstResponse = true
+}
+
+// AttemptFirstResponseTime returns the first valid upstream output observed
+// during the current attempt, if any.
+func (info *RelayInfo) AttemptFirstResponseTime() time.Time {
+	if info == nil {
+		return time.Time{}
+	}
+	return info.attemptFirstResponseTime
 }
 
 func (info *RelayInfo) HasSendResponse() bool {

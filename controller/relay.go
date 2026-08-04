@@ -243,6 +243,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 		attemptStartedAt := time.Now()
+		relayInfo.BeginAttempt()
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -257,8 +258,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		zeroTokenFailure := newAPIError == nil && common.GetContextKeyBool(c, constant.ContextKeyZeroTokenFailure)
 		if newAPIError == nil || zeroTokenFailure || !types.IsSkipRetryError(newAPIError) {
 			firstResponseMillis := int64(0)
-			if relayInfo.FirstResponseTime.After(attemptStartedAt) {
-				firstResponseMillis = relayInfo.FirstResponseTime.Sub(attemptStartedAt).Milliseconds()
+			attemptFirstResponseTime := relayInfo.AttemptFirstResponseTime()
+			if attemptFirstResponseTime.After(attemptStartedAt) {
+				firstResponseMillis = attemptFirstResponseTime.Sub(attemptStartedAt).Milliseconds()
 			} else if newAPIError == nil && !zeroTokenFailure {
 				// Non-stream responses have no earlier token callback; the complete
 				// valid response is their first observable output.
@@ -717,6 +719,7 @@ func RelayTask(c *gin.Context) {
 		c.Request.Body = io.NopCloser(bodyStorage)
 
 		attemptStartedAt := time.Now()
+		relayInfo.BeginAttempt()
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
 			retryParam.FinishAttemptTrace(nil, 0, "complete", "success")

@@ -2,12 +2,34 @@ package common
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRelayInfoTracksFirstResponsePerAttemptWithoutOverwritingRequestFirst(t *testing.T) {
+	start := time.Now().Add(-time.Minute)
+	info := &RelayInfo{
+		StartTime:         start,
+		FirstResponseTime: start.Add(-time.Second),
+		isFirstResponse:   true,
+	}
+
+	info.BeginAttempt()
+	info.SetFirstResponseTime()
+	firstRequestResponse := info.FirstResponseTime
+	firstAttemptResponse := info.AttemptFirstResponseTime()
+	require.False(t, firstAttemptResponse.IsZero())
+	require.Equal(t, firstRequestResponse, firstAttemptResponse)
+
+	info.BeginAttempt()
+	info.SetFirstResponseTime()
+	require.Equal(t, firstRequestResponse, info.FirstResponseTime)
+	require.NotZero(t, info.AttemptFirstResponseTime())
+}
 
 func TestRelayInfoGetFinalRequestRelayFormatPrefersExplicitFinal(t *testing.T) {
 	info := &RelayInfo{
