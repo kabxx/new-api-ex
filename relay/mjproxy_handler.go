@@ -532,6 +532,15 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			Description: "quota_not_enough",
 		}
 	}
+	if channelID := c.GetInt("channel_id"); channelID > 0 {
+		if _, err := model.ValidateChannelAttempt(
+			channelID,
+			common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
+			common.GetContextKeyString(c, constant.ContextKeyChannelKey),
+		); err != nil {
+			return service.MidjourneyErrorWrapper(constant.MjRequestError, "channel_unavailable")
+		}
+	}
 
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
@@ -596,7 +605,10 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			common.SysLog("get_channel_null: " + err.Error())
 		}
 		if channel.GetAutoBan() && common.AutomaticDisableChannelEnabled {
-			if model.UpdateChannelStatus(midjourneyTask.ChannelId, "", common.ChannelStatusManuallyDisabled, "No available account instance") {
+			mutation, updateErr := model.ApplyAutomaticChannelStatus(midjourneyTask.ChannelId, "", common.ChannelStatusAutoDisabled, "No available account instance")
+			if updateErr != nil {
+				common.SysLog("failed to auto-disable Midjourney channel: " + updateErr.Error())
+			} else if mutation.ChannelChanged {
 				channelName := ""
 				if channel, getErr := model.GetChannelById(midjourneyTask.ChannelId, false); getErr == nil {
 					channelName = channel.Name

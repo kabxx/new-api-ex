@@ -51,6 +51,21 @@ func (p *RetryParam) IncreaseRetry() {
 	}
 }
 
+// UsesAdaptiveSamePrioritySelection reports whether persisted channel outcome
+// metrics participate in this request's routing decisions. Legacy and weighted
+// random selection do not consume these metrics and should not pay their write
+// cost on every upstream attempt.
+func (p *RetryParam) UsesAdaptiveSamePrioritySelection() bool {
+	if p == nil {
+		return false
+	}
+	if p.Setting.ChannelStrategy != operation_setting.RetryChannelSamePriority {
+		return false
+	}
+	return p.Setting.SamePriorityStrategy == operation_setting.SamePriorityStabilityFirst ||
+		p.Setting.SamePriorityStrategy == operation_setting.SamePriorityLatencyFirst
+}
+
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
 	param.ensurePolicy()
 	param.CandidateExhausted = false
@@ -337,11 +352,21 @@ func (p *RetryParam) MarkChannelUnavailable(channel *model.Channel) {
 	}
 }
 
+func (p *RetryParam) MarkKeyUnavailable(channelID, keyIndex int) {
+	p.ensurePolicy()
+	if keyIndex < 0 {
+		return
+	}
+	if p.TriedKeys[channelID] == nil {
+		p.TriedKeys[channelID] = make(map[int]struct{})
+	}
+	p.TriedKeys[channelID][keyIndex] = struct{}{}
+}
+
 func (p *RetryParam) ResetCandidateRound() {
 	p.ensurePolicy()
 	p.TriedChannels = make(map[int]struct{})
 	p.TriedKeys = make(map[int]map[int]struct{})
-	p.UnavailableChannels = make(map[int]struct{})
 	p.PriorityIndexByGroup = make(map[string]int)
 	p.AutoGroupIndex = 0
 	if p.TokenGroup == "auto" && p.SelectedAutoGroup != "" && p.Ctx != nil && !common.GetContextKeyBool(p.Ctx, constant.ContextKeyTokenCrossGroupRetry) {

@@ -144,10 +144,31 @@ func TestRetryCandidateIdentityAndCyclePreserveAbsoluteBudget(t *testing.T) {
 
 	p.SetRetry(8)
 	startedAt := p.StartedAt
+	p.MarkChannelUnavailable(&model.Channel{Id: 9})
 	p.ResetCandidateRound()
 	assert.Equal(t, 8, p.GetRetry())
 	assert.Equal(t, startedAt, p.StartedAt)
 	assert.Empty(t, p.TriedKeys)
+	assert.Contains(t, p.UnavailableChannels, 9)
+}
+
+func TestSelectionMetricsOnlyApplyToAdaptiveSamePriorityStrategies(t *testing.T) {
+	tests := []struct {
+		name     string
+		setting  operation_setting.RetrySetting
+		expected bool
+	}{
+		{name: "legacy", setting: operation_setting.RetrySetting{ChannelStrategy: operation_setting.RetryChannelLegacy, SamePriorityStrategy: operation_setting.SamePriorityLatencyFirst}},
+		{name: "weighted", setting: operation_setting.RetrySetting{ChannelStrategy: operation_setting.RetryChannelSamePriority, SamePriorityStrategy: operation_setting.SamePriorityWeightedRandom}},
+		{name: "stability", setting: operation_setting.RetrySetting{ChannelStrategy: operation_setting.RetryChannelSamePriority, SamePriorityStrategy: operation_setting.SamePriorityStabilityFirst}, expected: true},
+		{name: "latency", setting: operation_setting.RetrySetting{ChannelStrategy: operation_setting.RetryChannelSamePriority, SamePriorityStrategy: operation_setting.SamePriorityLatencyFirst}, expected: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			param := &RetryParam{Setting: test.setting}
+			assert.Equal(t, test.expected, param.UsesAdaptiveSamePrioritySelection())
+		})
+	}
 }
 
 func TestRetryCounterAndTraceAttemptSaturateAtTechnicalLimit(t *testing.T) {

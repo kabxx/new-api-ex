@@ -60,7 +60,9 @@ func PersistentChannelSelectionMetricAvailable() bool {
 		return value.(bool)
 	}
 	available := DB.Migrator().HasTable(&ChannelSelectionMetricState{})
-	channelSelectionMetricTableAvailability.Store(DB, available)
+	if available {
+		channelSelectionMetricTableAvailability.Store(DB, true)
+	}
 	return available
 }
 
@@ -164,6 +166,40 @@ func ResetChannelSelectionMetrics() {
 	}
 }
 
+func deleteChannelSelectionMetricsTx(tx *gorm.DB, channelID int) error {
+	if !tx.Migrator().HasTable(&ChannelSelectionMetricState{}) {
+		return nil
+	}
+	return tx.Where("channel_id = ?", channelID).Delete(&ChannelSelectionMetricState{}).Error
+}
+
+func ResetChannelSelectionMetricsForChannel(channelID int) error {
+	if DB != nil && PersistentChannelSelectionMetricAvailable() {
+		if err := DB.Where("channel_id = ?", channelID).Delete(&ChannelSelectionMetricState{}).Error; err != nil {
+			return err
+		}
+	}
+	clearChannelSelectionMetricsForChannels([]int{channelID})
+	return nil
+}
+
+func clearChannelSelectionMetricsForChannels(channelIDs []int) {
+	if len(channelIDs) == 0 {
+		return
+	}
+	ids := make(map[int]struct{}, len(channelIDs))
+	for _, channelID := range channelIDs {
+		ids[channelID] = struct{}{}
+	}
+	channelSelectionMetrics.Lock()
+	for key := range channelSelectionMetrics.values {
+		if _, ok := ids[key.channelID]; ok {
+			delete(channelSelectionMetrics.values, key)
+		}
+	}
+	channelSelectionMetrics.Unlock()
+}
+
 func getChannelSelectionMetric(channelID int, modelName string) channelSelectionMetric {
 	if PersistentChannelSelectionMetricAvailable() {
 		if metric, err := loadPersistentChannelSelectionMetric(channelID, modelName); err == nil && len(metric.Observations) > 0 {
@@ -186,7 +222,7 @@ func channelSelectionReady(metric channelSelectionMetric) bool {
 }
 
 func channelLatencyScore(metric channelSelectionMetric) float64 {
-	if metric.LatencyCount == 0 {
+	if metric.LatencyCount == 0 || len(metric.Observations) == 0 || !metric.Observations[len(metric.Observations)-1].Success {
 		return math.Inf(1)
 	}
 	return metric.LatencyEWMA

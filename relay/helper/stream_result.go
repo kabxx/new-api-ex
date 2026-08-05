@@ -1,6 +1,8 @@
 package helper
 
 import (
+	"sync/atomic"
+
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 )
 
@@ -10,10 +12,11 @@ import (
 type StreamResult struct {
 	status  *relaycommon.StreamStatus
 	stopped bool
+	started *atomic.Bool
 }
 
-func newStreamResult(status *relaycommon.StreamStatus) *StreamResult {
-	return &StreamResult{status: status}
+func newStreamResult(status *relaycommon.StreamStatus, started *atomic.Bool) *StreamResult {
+	return &StreamResult{status: status, started: started}
 }
 
 // Error records a soft error. The stream continues processing.
@@ -44,6 +47,10 @@ func (r *StreamResult) Done() {
 // IsStopped returns whether Stop() or Done() was called during this chunk.
 func (r *StreamResult) IsStopped() bool {
 	return r.stopped
+}
+
+func (r *StreamResult) ResponseStarted() bool {
+	return r.started != nil && r.started.Load()
 }
 
 // reset clears the per-chunk stopped flag so the object can be reused.

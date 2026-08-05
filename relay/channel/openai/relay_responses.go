@@ -85,11 +85,17 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responseTextBuilder strings.Builder
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
+	toolCounter := responsesStreamToolCallCounter{}
 	var downstreamWriteErr error
+	var terminalErr *types.NewAPIError
+	completed := false
 	strictOutputGate := operation_setting.GetMonitorSetting().ZeroTokenAsFailure
-	scannerOptions := helper.StreamScannerOptions{}
+	scannerOptions := helper.StreamScannerOptions{
+		FirstResponseWhen: responsesStreamHasValidOutput,
+	}
 	if strictOutputGate {
 		scannerOptions.StartResponseWhen = responsesStreamHasMeaningfulOutput
+		scannerOptions.HandleBeforeResponseStartWhen = responsesStreamIsTerminal
 	}
 
 	scannerOutcome := helper.StreamScannerHandlerWithOptions(c, resp, info, scannerOptions, func(data string, sr *helper.StreamResult) {
@@ -101,14 +107,17 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Error(err)
 			return
 		}
-		if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
-			downstreamWriteErr = err
-			sr.Stop(err)
-			return
-		}
 		switch streamResponse.Type {
-		case "response.completed", "response.done":
+		case "response.completed", "response.done", "response.incomplete":
 			if streamResponse.Response != nil {
+				// Some compatible Responses upstreams omit usage on the terminal
+				// event but include the complete message output. Keep the existing
+				// delta-based text when present; otherwise use that terminal output
+				// for the same local token-count fallback used by non-streaming
+				// Responses.
+				if responseTextBuilder.Len() == 0 {
+					responseTextBuilder.WriteString(service.ExtractOutputTextFromResponses(streamResponse.Response))
+				}
 				if streamResponse.Response.Usage != nil {
 					if streamResponse.Response.Usage.InputTokens != 0 {
 						usage.PromptTokens = streamResponse.Response.Usage.InputTokens
@@ -138,37 +147,67 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 						imageCommitted = true
 					}
 				}
+				for index := range streamResponse.Response.Output {
+					toolCounter.Observe(info, &streamResponse.Response.Output[index], &index)
+				}
 			} else if !imageCommitted {
 				imageCounter.Commit(info)
 				imageCommitted = true
 			}
-		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			completed = true
+			sr.Done()
+			if !strictOutputGate || sr.ResponseStarted() || responsesStreamHasMeaningfulOutput(data) {
+				if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
+					downstreamWriteErr = err
+				}
+			}
+		case "response.failed", "response.cancelled", "response.canceled", "response.error":
 			if !imageCommitted {
 				imageCounter.Reset()
 				imageCounter.Commit(info)
 				imageCommitted = true
 			}
+			terminalErr = responsesStreamTerminalError(streamResponse)
+			if sr.ResponseStarted() {
+				if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
+					downstreamWriteErr = err
+				}
+			}
+			sr.Stop(terminalErr)
 		case "response.output_text.delta":
+			if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
+				downstreamWriteErr = err
+				sr.Stop(err)
+				return
+			}
 			// 处理输出文本
 			responseTextBuilder.WriteString(streamResponse.Delta)
 		case dto.ResponsesOutputTypeItemDone:
+			if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
+				downstreamWriteErr = err
+				sr.Stop(err)
+				return
+			}
 			if streamResponse.Item != nil {
-				switch streamResponse.Item.Type {
-				case dto.BuildInCallWebSearchCall:
-					info.CountBillableToolCall(dto.BuildInCallWebSearchCall, "")
-				case dto.BuildInCallFileSearchCall:
-					info.CountBillableToolCall(dto.BuildInCallFileSearchCall, "")
-				case dto.BuildInCallFunctionCall:
-					info.CountBillableToolCall(dto.BuildInCallFunctionCall, streamResponse.Item.Name)
-				case dto.ResponsesOutputTypeImageGenerationCall:
+				toolCounter.Observe(info, streamResponse.Item, streamResponse.OutputIndex)
+				if streamResponse.Item.Type == dto.ResponsesOutputTypeImageGenerationCall {
 					if !imageCommitted {
 						imageCounter.Observe(streamResponse.Item, streamResponse.OutputIndex)
 					}
 				}
 			}
+		default:
+			if err := sendResponsesStreamData(c, streamResponse, data); err != nil {
+				downstreamWriteErr = err
+				sr.Stop(err)
+			}
 		}
 	})
-	if downstreamWriteErr != nil || (strictOutputGate && c.Request.Context().Err() != nil) {
+	if terminalErr != nil {
+		return nil, terminalErr
+	}
+	clientGone := info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone
+	if (downstreamWriteErr != nil && !completed) || (strictOutputGate && clientGone && !completed) {
 		err := downstreamWriteErr
 		if err == nil {
 			err = c.Request.Context().Err()
@@ -206,10 +245,53 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if usage.PromptTokens == 0 && usage.CompletionTokens != 0 {
 		usage.PromptTokens = info.GetEstimatePromptTokens()
 	}
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens > 0 {
+		usage.PromptTokens = usage.TotalTokens
+	}
 
-	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	componentTokens := usage.PromptTokens + usage.CompletionTokens
+	if componentTokens > 0 || usage.TotalTokens == 0 {
+		usage.TotalTokens = componentTokens
+	}
 
 	return usage, nil
+}
+
+type responsesStreamToolCallCounter struct {
+	seen map[string]struct{}
+}
+
+func (counter *responsesStreamToolCallCounter) Observe(info *relaycommon.RelayInfo, item *dto.ResponsesOutput, outputIndex *int) {
+	if counter == nil || item == nil {
+		return
+	}
+	switch item.Type {
+	case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall, dto.BuildInCallFunctionCall:
+	default:
+		return
+	}
+	aliases := make([]string, 0, 3)
+	if item.ID != "" {
+		aliases = append(aliases, "id:"+item.ID)
+	}
+	if item.CallId != "" {
+		aliases = append(aliases, "call:"+item.CallId)
+	}
+	if outputIndex != nil && *outputIndex >= 0 {
+		aliases = append(aliases, fmt.Sprintf("index:%d", *outputIndex))
+	}
+	if counter.seen == nil {
+		counter.seen = make(map[string]struct{})
+	}
+	for _, alias := range aliases {
+		if _, exists := counter.seen[alias]; exists {
+			return
+		}
+	}
+	for _, alias := range aliases {
+		counter.seen[alias] = struct{}{}
+	}
+	info.CountBillableToolCall(item.Type, item.Name)
 }
 
 type responsesStreamGateEvent struct {
@@ -245,6 +327,25 @@ type responsesStreamGateContent struct {
 }
 
 func responsesStreamHasMeaningfulOutput(data string) bool {
+	if responsesStreamHasValidOutput(data) {
+		return true
+	}
+	var event responsesStreamGateEvent
+	if err := common.UnmarshalJsonStr(data, &event); err != nil {
+		return false
+	}
+	switch event.Type {
+	case "response.completed", "response.done", "response.incomplete":
+		if event.Response == nil {
+			return false
+		}
+		return dto.HasPositiveOpenAIUsageTokens(event.Response.Usage)
+	default:
+		return false
+	}
+}
+
+func responsesStreamHasValidOutput(data string) bool {
 	var event responsesStreamGateEvent
 	if err := common.UnmarshalJsonStr(data, &event); err != nil {
 		return false
@@ -257,12 +358,9 @@ func responsesStreamHasMeaningfulOutput(data string) bool {
 		return responsesOutputItemHasMeaningfulOutput(event.Item)
 	case "response.content_part.done":
 		return event.Part != nil && (event.Part.Text != "" || event.Part.Refusal != "")
-	case "response.completed", "response.done":
+	case "response.completed", "response.done", "response.incomplete":
 		if event.Response == nil {
 			return false
-		}
-		if dto.HasPositiveOpenAIUsageTokens(event.Response.Usage) {
-			return true
 		}
 		for i := range event.Response.Output {
 			if responsesOutputItemHasMeaningfulOutput(&event.Response.Output[i]) {
@@ -273,6 +371,32 @@ func responsesStreamHasMeaningfulOutput(data string) bool {
 	default:
 		return false
 	}
+}
+
+func responsesStreamIsTerminal(data string) bool {
+	var event responsesStreamGateEvent
+	if err := common.UnmarshalJsonStr(data, &event); err != nil {
+		return false
+	}
+	switch event.Type {
+	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled", "response.error":
+		return true
+	default:
+		return false
+	}
+}
+
+func responsesStreamTerminalError(streamResponse dto.ResponsesStreamResponse) *types.NewAPIError {
+	if streamResponse.Response != nil {
+		if oaiError := streamResponse.Response.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+			return types.WithOpenAIError(*oaiError, http.StatusBadGateway)
+		}
+	}
+	return types.NewOpenAIError(
+		fmt.Errorf("responses stream terminated with %s", streamResponse.Type),
+		types.ErrorCodeBadResponse,
+		http.StatusBadGateway,
+	)
 }
 
 func responsesOutputItemHasMeaningfulOutput(item *responsesStreamGateItem) bool {

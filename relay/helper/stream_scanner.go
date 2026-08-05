@@ -38,8 +38,10 @@ const (
 )
 
 type StreamScannerOptions struct {
-	StartResponseWhen func(data string) bool
-	MaxPendingBytes   int
+	StartResponseWhen             func(data string) bool
+	HandleBeforeResponseStartWhen func(data string) bool
+	FirstResponseWhen             func(data string) bool
+	MaxPendingBytes               int
 }
 
 type StreamScannerOutcome struct {
@@ -243,7 +245,7 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 			stop()
 			wg.Done()
 		}()
-		sr := newStreamResult(info.StreamStatus)
+		sr := newStreamResult(info.StreamStatus, &responseStarted)
 		for data := range dataChan {
 			sr.reset()
 			func() {
@@ -256,6 +258,7 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 				return
 			}
 		}
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 	})
 
 	// Scanner goroutine with improved error handling
@@ -267,7 +270,6 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 				logger.LogError(c, fmt.Sprintf("scanner goroutine panic: %v", r))
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("scanner panic: %v", r))
 			}
-			stop()
 			logger.LogDebug(c, "scanner goroutine exited")
 			wg.Done()
 		}()
@@ -300,10 +302,23 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
-				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
+				if options.FirstResponseWhen == nil || options.FirstResponseWhen(data) {
+					info.SetFirstResponseTime()
+				}
 				if startGateEnabled && !responseStarted.Load() {
 					shouldStart := options.StartResponseWhen(data)
+					shouldHandleBeforeStart := options.HandleBeforeResponseStartWhen != nil && options.HandleBeforeResponseStartWhen(data)
+					if shouldHandleBeforeStart && !shouldStart {
+						select {
+						case dataChan <- data:
+						case <-ctx.Done():
+							return
+						case <-stopChan:
+							return
+						}
+						continue
+					}
 					wouldExceedLimit := len(data) > maxPendingBytes-pendingBytes
 					if !shouldStart && !wouldExceedLimit {
 						pendingData = append(pendingData, data)
@@ -348,7 +363,6 @@ func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			}
 		}
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 	})
 
 	// 主循环等待完成或超时

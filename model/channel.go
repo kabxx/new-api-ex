@@ -511,10 +511,23 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 			tx.Rollback()
 			return 0, err
 		}
+		if tx.Migrator().HasTable(&ChannelFailureState{}) {
+			if err := tx.Where("channel_id in (?)", chunk).Delete(&ChannelFailureState{}).Error; err != nil {
+				tx.Rollback()
+				return 0, err
+			}
+		}
+		if tx.Migrator().HasTable(&ChannelSelectionMetricState{}) {
+			if err := tx.Where("channel_id in (?)", chunk).Delete(&ChannelSelectionMetricState{}).Error; err != nil {
+				tx.Rollback()
+				return 0, err
+			}
+		}
 	}
 	if err := tx.Commit().Error; err != nil {
 		return 0, err
 	}
+	clearChannelSelectionMetricsForChannels(ids)
 	return deletedCount, nil
 }
 
@@ -647,12 +660,26 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	var err error
-	err = DB.Delete(channel).Error
-	if err != nil {
-		return err
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(channel).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		if err := deleteChannelFailureStatesTx(tx, channel.Id); err != nil {
+			return err
+		}
+		if tx.Migrator().HasTable(&ChannelSelectionMetricState{}) {
+			if err := tx.Where("channel_id = ?", channel.Id).Delete(&ChannelSelectionMetricState{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		clearChannelSelectionMetricsForChannels([]int{channel.Id})
 	}
-	err = channel.DeleteAbilities()
 	return err
 }
 
@@ -692,36 +719,74 @@ func CleanupChannelPollingLocks() {
 	})
 }
 
-func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason string) {
+type ChannelStatusMutation struct {
+	KeyChanged     bool
+	ChannelChanged bool
+	PreviousStatus int
+	CurrentStatus  int
+}
+
+func (mutation ChannelStatusMutation) Changed() bool {
+	return mutation.KeyChanged || mutation.ChannelChanged
+}
+
+var (
+	ErrChannelAttemptDisabled = errors.New("channel is disabled")
+	ErrChannelKeyDisabled     = errors.New("channel key is disabled")
+	ErrChannelKeyChanged      = errors.New("channel key selection is stale")
+)
+
+func findChannelKeyIndex(channel *Channel, usingKey string) int {
+	for index, key := range channel.GetKeys() {
+		if key == usingKey {
+			return index
+		}
+	}
+	return -1
+}
+
+func setChannelStatusReason(channel *Channel, reason string) {
+	info := channel.GetOtherInfo()
+	info["status_reason"] = reason
+	info["status_time"] = common.GetTimestamp()
+	channel.SetOtherInfo(info)
+}
+
+func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason string) bool {
 	keys := channel.GetKeys()
 	if len(keys) == 0 {
-		channel.Status = status
-	} else {
-		keyIndex := -1
-		for i, key := range keys {
-			if key == usingKey {
-				keyIndex = i
-				break
-			}
+		if channel.Status == status {
+			return false
 		}
+		channel.Status = status
+		setChannelStatusReason(channel, reason)
+		return true
+	} else {
+		keyIndex := findChannelKeyIndex(channel, usingKey)
 		if keyIndex < 0 {
 			if usingKey != "" {
 				common.SysLog(fmt.Sprintf("failed to update multi-key status: channel_id=%d, using key not found", channel.Id))
-				return
+				return false
+			}
+			if channel.Status == status {
+				return false
 			}
 			channel.Status = status
-			info := channel.GetOtherInfo()
-			info["status_reason"] = reason
-			info["status_time"] = common.GetTimestamp()
-			channel.SetOtherInfo(info)
-			return
+			setChannelStatusReason(channel, reason)
+			return true
 		}
 		if channel.ChannelInfo.MultiKeyStatusList == nil {
 			channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
 		}
 		if status == common.ChannelStatusEnabled {
+			if _, exists := channel.ChannelInfo.MultiKeyStatusList[keyIndex]; !exists {
+				return false
+			}
 			delete(channel.ChannelInfo.MultiKeyStatusList, keyIndex)
 		} else {
+			if channel.ChannelInfo.MultiKeyStatusList[keyIndex] == status {
+				return false
+			}
 			channel.ChannelInfo.MultiKeyStatusList[keyIndex] = status
 			if channel.ChannelInfo.MultiKeyDisabledReason == nil {
 				channel.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
@@ -734,13 +799,11 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 		}
 		if !hasEnabledMultiKey(keys, channel.ChannelInfo.MultiKeyStatusList) {
 			channel.Status = common.ChannelStatusAutoDisabled
-			info := channel.GetOtherInfo()
-			info["status_reason"] = "All keys are disabled"
-			info["status_time"] = common.GetTimestamp()
-			channel.SetOtherInfo(info)
+			setChannelStatusReason(channel, "All keys are disabled")
 		} else if status == common.ChannelStatusEnabled {
 			channel.Status = common.ChannelStatusEnabled
 		}
+		return true
 	}
 }
 
@@ -757,96 +820,542 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 	return false
 }
 
-func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
-	if common.MemoryCacheEnabled {
-		channelStatusLock.Lock()
-		defer channelStatusLock.Unlock()
-
-		channelCache, _ := CacheGetChannel(channelId)
-		if channelCache == nil {
-			return false
-		}
-		if channelCache.ChannelInfo.IsMultiKey {
-			// Use per-channel lock to prevent concurrent map read/write with GetNextEnabledKey
-			beforeStatus := channelCache.Status
-			pollingLock := GetChannelPollingLock(channelId)
-			pollingLock.Lock()
-			// 如果是多Key模式，更新缓存中的状态
-			handlerMultiKeyUpdate(channelCache, usingKey, status, reason)
-			pollingLock.Unlock()
-			if beforeStatus != channelCache.Status {
-				CacheUpdateChannelStatus(channelId, channelCache.Status)
-			}
-			//CacheUpdateChannel(channelCache)
-			//return true
-		} else {
-			// 如果缓存渠道存在，且状态已是目标状态，直接返回
-			if channelCache.Status == status {
-				return false
-			}
-			CacheUpdateChannelStatus(channelId, status)
-		}
+func persistChannelStatusMutation(tx *gorm.DB, channel *Channel, channelChanged bool) error {
+	if err := tx.Model(&Channel{}).
+		Where("id = ?", channel.Id).
+		Select("key", "status", "channel_info", "other_info").
+		Updates(channel).Error; err != nil {
+		return err
 	}
+	if !channelChanged {
+		return nil
+	}
+	return tx.Model(&Ability{}).
+		Where("channel_id = ?", channel.Id).
+		Select("enabled").
+		Update("enabled", channel.Status == common.ChannelStatusEnabled).Error
+}
 
-	shouldUpdateAbilities := false
-	defer func() {
-		if shouldUpdateAbilities {
-			err := UpdateAbilityStatus(channelId, status == common.ChannelStatusEnabled)
-			if err != nil {
-				common.SysLog(fmt.Sprintf("failed to update ability status: channel_id=%d, error=%v", channelId, err))
+func refreshChannelStatusCache(channel *Channel, channelChanged bool) {
+	if !common.MemoryCacheEnabled || channel == nil {
+		return
+	}
+	if channelChanged {
+		InitChannelCache()
+		return
+	}
+	CacheUpdateChannel(channel)
+}
+
+func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
+	channelStatusLock.Lock()
+	defer channelStatusLock.Unlock()
+
+	var updated *Channel
+	changed := false
+	channelChanged := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		channel := &Channel{}
+		if err := lockForUpdate(tx).First(channel, "id = ?", channelId).Error; err != nil {
+			return err
+		}
+		previousStatus := channel.Status
+		if channel.ChannelInfo.IsMultiKey {
+			changed = handlerMultiKeyUpdate(channel, usingKey, status, reason)
+		} else if channel.Status != status {
+			channel.Status = status
+			setChannelStatusReason(channel, reason)
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		channelChanged = previousStatus != channel.Status
+		if err := persistChannelStatusMutation(tx, channel, channelChanged); err != nil {
+			return err
+		}
+		updated = channel
+		return nil
+	})
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channelId, status, err))
+		return false
+	}
+	refreshChannelStatusCache(updated, channelChanged)
+	return changed
+}
+
+// ApplyManualChannelStatus performs a whole-channel manual state change and
+// clears policy evidence in the same transaction. Automatic transitions must
+// use ApplyAutomaticChannelStatus instead.
+func ApplyManualChannelStatus(channelId int, status int, reason string) (ChannelStatusMutation, error) {
+	if DB == nil {
+		return ChannelStatusMutation{}, errors.New("main database is unavailable")
+	}
+	if status != common.ChannelStatusEnabled && status != common.ChannelStatusManuallyDisabled {
+		return ChannelStatusMutation{}, fmt.Errorf("invalid manual channel status: %d", status)
+	}
+	channelStatusLock.Lock()
+	defer channelStatusLock.Unlock()
+
+	mutation := ChannelStatusMutation{}
+	var updated *Channel
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		channel := &Channel{}
+		if err := lockForUpdate(tx).First(channel, "id = ?", channelId).Error; err != nil {
+			return err
+		}
+		mutation.PreviousStatus = channel.Status
+		mutation.CurrentStatus = channel.Status
+		if channel.Status != status {
+			channel.Status = status
+			setChannelStatusReason(channel, reason)
+			mutation.ChannelChanged = true
+			mutation.CurrentStatus = status
+			if err := persistChannelStatusMutation(tx, channel, true); err != nil {
+				return err
+			}
+			updated = channel
+		}
+		if err := deleteChannelFailureStatesTx(tx, channelId); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return ChannelStatusMutation{}, err
+	}
+	refreshChannelStatusCache(updated, mutation.ChannelChanged)
+	return mutation, nil
+}
+
+// ApplyManualChannelStatuses atomically applies one manual state to a set of
+// channels and clears their policy evidence before the transaction commits.
+func ApplyManualChannelStatuses(channelIDs []int, status int, reason string) (int, error) {
+	if DB == nil {
+		return 0, errors.New("main database is unavailable")
+	}
+	if status != common.ChannelStatusEnabled && status != common.ChannelStatusManuallyDisabled {
+		return 0, fmt.Errorf("invalid manual channel status: %d", status)
+	}
+	if len(channelIDs) == 0 {
+		return 0, nil
+	}
+	channelStatusLock.Lock()
+	defer channelStatusLock.Unlock()
+
+	changed := 0
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		for _, channelID := range channelIDs {
+			channel := &Channel{}
+			if err := lockForUpdate(tx).First(channel, "id = ?", channelID).Error; err != nil {
+				return err
+			}
+			if channel.Status != status {
+				channel.Status = status
+				setChannelStatusReason(channel, reason)
+				if err := persistChannelStatusMutation(tx, channel, true); err != nil {
+					return err
+				}
+				changed++
+			}
+			if err := deleteChannelFailureStatesTx(tx, channelID); err != nil {
+				return err
 			}
 		}
-	}()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if changed > 0 && common.MemoryCacheEnabled {
+		InitChannelCache()
+	}
+	return changed, nil
+}
+
+type ManualMultiKeyMutation struct {
+	ChannelStatusMutation
+	ChangedKeys int
+}
+
+// ApplyManualMultiKeyMutation serializes all administrator key edits with
+// automatic status transitions and resets policy evidence transactionally.
+func ApplyManualMultiKeyMutation(channelID int, action string, keyIndex *int) (ManualMultiKeyMutation, error) {
+	if DB == nil {
+		return ManualMultiKeyMutation{}, errors.New("main database is unavailable")
+	}
+	pollingLock := GetChannelPollingLock(channelID)
+	pollingLock.Lock()
+	defer pollingLock.Unlock()
+	channelStatusLock.Lock()
+	defer channelStatusLock.Unlock()
+
+	mutation := ManualMultiKeyMutation{}
+	var updated *Channel
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		channel := &Channel{}
+		if err := lockForUpdate(tx).First(channel, "id = ?", channelID).Error; err != nil {
+			return err
+		}
+		if !channel.ChannelInfo.IsMultiKey {
+			return errors.New("channel is not in multi-key mode")
+		}
+		keys := channel.GetKeys()
+		if keyIndex != nil && (*keyIndex < 0 || *keyIndex >= len(keys)) {
+			return errors.New("key index is out of range")
+		}
+		if (action == "disable_key" || action == "enable_key" || action == "delete_key") && keyIndex == nil {
+			return errors.New("key index is required")
+		}
+		if channel.ChannelInfo.MultiKeyStatusList == nil {
+			channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
+		}
+		if channel.ChannelInfo.MultiKeyDisabledTime == nil {
+			channel.ChannelInfo.MultiKeyDisabledTime = make(map[int]int64)
+		}
+		if channel.ChannelInfo.MultiKeyDisabledReason == nil {
+			channel.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
+		}
+		previousStatus := channel.Status
+		changedKeys := 0
+		manualReason := "manual key operation"
+		setManualDisabled := func(index int) {
+			if channel.ChannelInfo.MultiKeyStatusList[index] == common.ChannelStatusManuallyDisabled {
+				return
+			}
+			channel.ChannelInfo.MultiKeyStatusList[index] = common.ChannelStatusManuallyDisabled
+			channel.ChannelInfo.MultiKeyDisabledTime[index] = common.GetTimestamp()
+			channel.ChannelInfo.MultiKeyDisabledReason[index] = manualReason
+			changedKeys++
+		}
+		clearKeyStatus := func(index int) {
+			if _, exists := channel.ChannelInfo.MultiKeyStatusList[index]; !exists {
+				return
+			}
+			delete(channel.ChannelInfo.MultiKeyStatusList, index)
+			delete(channel.ChannelInfo.MultiKeyDisabledTime, index)
+			delete(channel.ChannelInfo.MultiKeyDisabledReason, index)
+			changedKeys++
+		}
+
+		switch action {
+		case "disable_key":
+			setManualDisabled(*keyIndex)
+		case "enable_key":
+			clearKeyStatus(*keyIndex)
+		case "enable_all_keys":
+			for index := range channel.ChannelInfo.MultiKeyStatusList {
+				clearKeyStatus(index)
+			}
+		case "disable_all_keys":
+			for index := range keys {
+				status := channel.ChannelInfo.MultiKeyStatusList[index]
+				if status == 0 || status == common.ChannelStatusEnabled {
+					setManualDisabled(index)
+				}
+			}
+		case "delete_key":
+			if len(keys) <= 1 {
+				return errors.New("cannot delete the last key")
+			}
+			removed := keys[*keyIndex]
+			remaining := make([]string, 0, len(keys)-1)
+			statusList := make(map[int]int)
+			disabledTime := make(map[int]int64)
+			disabledReason := make(map[int]string)
+			newIndex := 0
+			for index, key := range keys {
+				if index == *keyIndex {
+					continue
+				}
+				remaining = append(remaining, key)
+				if status, ok := channel.ChannelInfo.MultiKeyStatusList[index]; ok {
+					statusList[newIndex] = status
+					if value, ok := channel.ChannelInfo.MultiKeyDisabledTime[index]; ok {
+						disabledTime[newIndex] = value
+					}
+					if value, ok := channel.ChannelInfo.MultiKeyDisabledReason[index]; ok {
+						disabledReason[newIndex] = value
+					}
+				}
+				newIndex++
+			}
+			channel.Key = strings.Join(remaining, "\n")
+			channel.ChannelInfo.MultiKeySize = len(remaining)
+			channel.ChannelInfo.MultiKeyStatusList = statusList
+			channel.ChannelInfo.MultiKeyDisabledTime = disabledTime
+			channel.ChannelInfo.MultiKeyDisabledReason = disabledReason
+			changedKeys = 1
+			if err := deleteChannelFailureStatesForKeysTx(tx, channelID, []string{removed}); err != nil {
+				return err
+			}
+		case "delete_disabled_keys":
+			remaining := make([]string, 0, len(keys))
+			statusList := make(map[int]int)
+			disabledTime := make(map[int]int64)
+			disabledReason := make(map[int]string)
+			newIndex := 0
+			for index, key := range keys {
+				if channel.ChannelInfo.MultiKeyStatusList[index] == common.ChannelStatusAutoDisabled {
+					changedKeys++
+					continue
+				}
+				remaining = append(remaining, key)
+				if status, ok := channel.ChannelInfo.MultiKeyStatusList[index]; ok {
+					statusList[newIndex] = status
+				}
+				if value, ok := channel.ChannelInfo.MultiKeyDisabledTime[index]; ok {
+					disabledTime[newIndex] = value
+				}
+				if value, ok := channel.ChannelInfo.MultiKeyDisabledReason[index]; ok {
+					disabledReason[newIndex] = value
+				}
+				newIndex++
+			}
+			if changedKeys == 0 {
+				return nil
+			}
+			channel.Key = strings.Join(remaining, "\n")
+			channel.ChannelInfo.MultiKeySize = len(remaining)
+			channel.ChannelInfo.MultiKeyStatusList = statusList
+			channel.ChannelInfo.MultiKeyDisabledTime = disabledTime
+			channel.ChannelInfo.MultiKeyDisabledReason = disabledReason
+		default:
+			return fmt.Errorf("unsupported multi-key action: %s", action)
+		}
+
+		if changedKeys == 0 {
+			if keyIndex != nil {
+				return deleteChannelFailureStatesForKeysTx(tx, channelID, []string{keys[*keyIndex]})
+			}
+			return deleteChannelFailureStatesTx(tx, channelID)
+		}
+		if channel.Status != common.ChannelStatusManuallyDisabled {
+			if hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList) {
+				if channel.Status == common.ChannelStatusAutoDisabled {
+					channel.Status = common.ChannelStatusEnabled
+				}
+			} else {
+				channel.Status = common.ChannelStatusAutoDisabled
+				setChannelStatusReason(channel, "All keys are disabled")
+			}
+		}
+		mutation.PreviousStatus = previousStatus
+		mutation.CurrentStatus = channel.Status
+		mutation.ChannelChanged = previousStatus != channel.Status
+		mutation.KeyChanged = changedKeys > 0
+		mutation.ChangedKeys = changedKeys
+		if err := persistChannelStatusMutation(tx, channel, mutation.ChannelChanged); err != nil {
+			return err
+		}
+		if action != "delete_key" && action != "delete_disabled_keys" {
+			if err := deleteChannelFailureStatesTx(tx, channelID); err != nil {
+				return err
+			}
+		} else if action == "delete_disabled_keys" {
+			if err := deleteChannelFailureStatesTx(tx, channelID); err != nil {
+				return err
+			}
+		}
+		if mutation.KeyChanged {
+			if err := deleteChannelSelectionMetricsTx(tx, channelID); err != nil {
+				return err
+			}
+		}
+		updated = channel
+		return nil
+	})
+	if err != nil {
+		return ManualMultiKeyMutation{}, err
+	}
+	if mutation.KeyChanged {
+		clearChannelSelectionMetricsForChannels([]int{channelID})
+	}
+	refreshChannelStatusCache(updated, mutation.ChannelChanged)
+	return mutation, nil
+}
+
+func ApplyAutomaticChannelStatus(channelId int, usingKey string, status int, reason string) (ChannelStatusMutation, error) {
+	return applyAutomaticChannelStatus(channelId, usingKey, status, reason, "")
+}
+
+func ApplyAutomaticChannelStatusWithClaim(channelId int, usingKey string, status int, reason string, claimToken string) (ChannelStatusMutation, error) {
+	if claimToken == "" {
+		return ChannelStatusMutation{}, errors.New("channel failure claim token is required")
+	}
+	if status != common.ChannelStatusAutoDisabled {
+		return ChannelStatusMutation{}, errors.New("channel failure claims can only auto-disable a channel")
+	}
+	return applyAutomaticChannelStatus(channelId, usingKey, status, reason, claimToken)
+}
+
+func applyAutomaticChannelStatus(channelId int, usingKey string, status int, reason string, claimToken string) (ChannelStatusMutation, error) {
+	if DB == nil {
+		return ChannelStatusMutation{}, errors.New("main database is unavailable")
+	}
+	if status != common.ChannelStatusAutoDisabled && status != common.ChannelStatusEnabled {
+		return ChannelStatusMutation{}, fmt.Errorf("invalid automatic channel status: %d", status)
+	}
+	pollingLock := GetChannelPollingLock(channelId)
+	pollingLock.Lock()
+	defer pollingLock.Unlock()
+	channelStatusLock.Lock()
+	defer channelStatusLock.Unlock()
+
+	mutation := ChannelStatusMutation{}
+	var updated *Channel
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		channel := &Channel{}
+		if err := lockForUpdate(tx).First(channel, "id = ?", channelId).Error; err != nil {
+			return err
+		}
+		if claimToken != "" {
+			claimActive, err := validPersistentChannelFailureClaimTx(
+				tx,
+				channelId,
+				ChannelFailureKeyHash(usingKey),
+				claimToken,
+				common.GetTimestamp(),
+			)
+			if err != nil {
+				return err
+			}
+			if !claimActive {
+				return nil
+			}
+		}
+		mutation.PreviousStatus = channel.Status
+		mutation.CurrentStatus = channel.Status
+		if status == common.ChannelStatusAutoDisabled && !channel.GetAutoBan() {
+			return nil
+		}
+
+		if !channel.ChannelInfo.IsMultiKey || usingKey == "" {
+			expected := common.ChannelStatusEnabled
+			if status == common.ChannelStatusEnabled {
+				expected = common.ChannelStatusAutoDisabled
+			}
+			if channel.Status != expected {
+				return nil
+			}
+			channel.Status = status
+			setChannelStatusReason(channel, reason)
+			mutation.ChannelChanged = true
+		} else {
+			keyIndexes := make([]int, 0, 1)
+			for index, key := range channel.GetKeys() {
+				if key == usingKey {
+					keyIndexes = append(keyIndexes, index)
+				}
+			}
+			if len(keyIndexes) == 0 {
+				return ErrChannelKeyChanged
+			}
+			if channel.ChannelInfo.MultiKeyStatusList == nil {
+				channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
+			}
+			if status == common.ChannelStatusAutoDisabled {
+				if channel.ChannelInfo.MultiKeyDisabledReason == nil {
+					channel.ChannelInfo.MultiKeyDisabledReason = make(map[int]string)
+				}
+				if channel.ChannelInfo.MultiKeyDisabledTime == nil {
+					channel.ChannelInfo.MultiKeyDisabledTime = make(map[int]int64)
+				}
+				for _, keyIndex := range keyIndexes {
+					keyStatus := common.ChannelStatusEnabled
+					if stored, ok := channel.ChannelInfo.MultiKeyStatusList[keyIndex]; ok {
+						keyStatus = stored
+					}
+					if keyStatus != common.ChannelStatusEnabled {
+						continue
+					}
+					channel.ChannelInfo.MultiKeyStatusList[keyIndex] = common.ChannelStatusAutoDisabled
+					channel.ChannelInfo.MultiKeyDisabledReason[keyIndex] = reason
+					channel.ChannelInfo.MultiKeyDisabledTime[keyIndex] = common.GetTimestamp()
+					mutation.KeyChanged = true
+				}
+				if channel.Status == common.ChannelStatusEnabled && !hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList) {
+					channel.Status = common.ChannelStatusAutoDisabled
+					setChannelStatusReason(channel, "All keys are disabled")
+					mutation.ChannelChanged = true
+				}
+			} else {
+				for _, keyIndex := range keyIndexes {
+					if channel.ChannelInfo.MultiKeyStatusList[keyIndex] != common.ChannelStatusAutoDisabled {
+						continue
+					}
+					delete(channel.ChannelInfo.MultiKeyStatusList, keyIndex)
+					delete(channel.ChannelInfo.MultiKeyDisabledReason, keyIndex)
+					delete(channel.ChannelInfo.MultiKeyDisabledTime, keyIndex)
+					mutation.KeyChanged = true
+				}
+				if mutation.KeyChanged && channel.Status == common.ChannelStatusAutoDisabled && hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList) {
+					channel.Status = common.ChannelStatusEnabled
+					setChannelStatusReason(channel, "")
+					mutation.ChannelChanged = true
+				}
+			}
+		}
+
+		mutation.CurrentStatus = channel.Status
+		if !mutation.Changed() {
+			return nil
+		}
+		if err := persistChannelStatusMutation(tx, channel, mutation.ChannelChanged); err != nil {
+			return err
+		}
+		updated = channel
+		return nil
+	})
+	if err != nil {
+		return ChannelStatusMutation{}, err
+	}
+	refreshChannelStatusCache(updated, mutation.ChannelChanged)
+	return mutation, nil
+}
+
+func ValidateChannelAttempt(channelId int, keyIndex int, usingKey string) (*Channel, error) {
 	channel, err := GetChannelById(channelId, true)
 	if err != nil {
-		return false
-	} else {
-		if channel.Status == status {
-			return false
+		return nil, err
+	}
+	if channel.Status != common.ChannelStatusEnabled {
+		return nil, ErrChannelAttemptDisabled
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		if usingKey != "" && channel.Key != usingKey {
+			return nil, ErrChannelKeyChanged
 		}
-
-		if channel.ChannelInfo.IsMultiKey {
-			beforeStatus := channel.Status
-			// Protect map writes with the same per-channel lock used by readers
-			pollingLock := GetChannelPollingLock(channelId)
-			pollingLock.Lock()
-			handlerMultiKeyUpdate(channel, usingKey, status, reason)
-			pollingLock.Unlock()
-			if beforeStatus != channel.Status {
-				shouldUpdateAbilities = true
-			}
-		} else {
-			info := channel.GetOtherInfo()
-			info["status_reason"] = reason
-			info["status_time"] = common.GetTimestamp()
-			channel.SetOtherInfo(info)
-			channel.Status = status
-			shouldUpdateAbilities = true
-		}
-		err = channel.SaveWithoutKey()
-		if err != nil {
-			common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
-			return false
+		return channel, nil
+	}
+	keys := channel.GetKeys()
+	if keyIndex < 0 || keyIndex >= len(keys) || (usingKey != "" && keys[keyIndex] != usingKey) {
+		return nil, ErrChannelKeyChanged
+	}
+	if channel.ChannelInfo.MultiKeyStatusList != nil {
+		if status, ok := channel.ChannelInfo.MultiKeyStatusList[keyIndex]; ok && status != common.ChannelStatusEnabled {
+			return nil, ErrChannelKeyDisabled
 		}
 	}
-	return true
+	return channel, nil
 }
 
 func EnableChannelByTag(tag string) error {
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error
-	if err != nil {
+	var ids []int
+	if err := DB.Model(&Channel{}).Where("tag = ?", tag).Pluck("id", &ids).Error; err != nil {
 		return err
 	}
-	err = UpdateAbilityStatusByTag(tag, true)
+	_, err := ApplyManualChannelStatuses(ids, common.ChannelStatusEnabled, "manual tag operation")
 	return err
 }
 
 func DisableChannelByTag(tag string) error {
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error
-	if err != nil {
+	var ids []int
+	if err := DB.Model(&Channel{}).Where("tag = ?", tag).Pluck("id", &ids).Error; err != nil {
 		return err
 	}
-	err = UpdateAbilityStatusByTag(tag, false)
+	_, err := ApplyManualChannelStatuses(ids, common.ChannelStatusManuallyDisabled, "manual tag operation")
 	return err
 }
 
@@ -922,13 +1431,51 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
-	result := DB.Where("status = ?", status).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	return deleteChannelsByStatuses([]int{int(status)})
 }
 
 func DeleteDisabledChannel() (int64, error) {
-	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	return deleteChannelsByStatuses([]int{common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled})
+}
+
+func deleteChannelsByStatuses(statuses []int) (int64, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+	deletedIDs := make([]int, 0)
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var ids []int
+		if err := lockForUpdate(tx).Model(&Channel{}).Where("status IN ?", statuses).Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		for _, id := range ids {
+			result := tx.Where("id = ? AND status IN ?", id, statuses).Delete(&Channel{})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				continue
+			}
+			if err := tx.Where("channel_id = ?", id).Delete(&Ability{}).Error; err != nil {
+				return err
+			}
+			if err := deleteChannelFailureStatesTx(tx, id); err != nil {
+				return err
+			}
+			if tx.Migrator().HasTable(&ChannelSelectionMetricState{}) {
+				if err := tx.Where("channel_id = ?", id).Delete(&ChannelSelectionMetricState{}).Error; err != nil {
+					return err
+				}
+			}
+			deletedIDs = append(deletedIDs, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	clearChannelSelectionMetricsForChannels(deletedIDs)
+	return int64(len(deletedIDs)), nil
 }
 
 func GetPaginatedTags(offset int, limit int) ([]*string, error) {

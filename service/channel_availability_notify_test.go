@@ -126,7 +126,7 @@ func TestEvaluateChannelAvailabilitySendsSeparatelyAndContinuesAfterFailure(t *t
 func TestDrainChannelAvailabilityEventsPreservesRapidEdgeOrder(t *testing.T) {
 	setupChannelAvailabilityNotificationTest(t, true, []string{"admin@example.com"})
 	require.NoError(t, model.InitializeChannelAvailabilityState())
-	channel := model.Channel{Name: "primary", Status: common.ChannelStatusEnabled}
+	channel := model.Channel{Name: "primary", Status: common.ChannelStatusEnabled, AutoBan: common.GetPointer(1)}
 	require.NoError(t, model.DB.Create(&channel).Error)
 	recipientsJSON, err := common.Marshal([]string{"admin@example.com"})
 	require.NoError(t, err)
@@ -248,9 +248,12 @@ func TestSendChannelAvailabilityTestEmailsDoesNotChangeState(t *testing.T) {
 
 func TestDeferredChannelChangesAreEvaluatedOnceAfterHealthCycle(t *testing.T) {
 	setupChannelAvailabilityNotificationTest(t, true, []string{"admin@example.com"})
+	previousAutomaticDisable := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = previousAutomaticDisable })
 	channels := []model.Channel{
-		{Name: "primary", Status: common.ChannelStatusEnabled},
-		{Name: "secondary", Status: common.ChannelStatusEnabled},
+		{Name: "primary", Status: common.ChannelStatusEnabled, AutoBan: common.GetPointer(1)},
+		{Name: "secondary", Status: common.ChannelStatusEnabled, AutoBan: common.GetPointer(1)},
 	}
 	require.NoError(t, model.DB.Create(&channels).Error)
 	require.NoError(t, model.InitializeChannelAvailabilityState())
@@ -288,7 +291,7 @@ func TestDeferredChannelChangesAreEvaluatedOnceAfterHealthCycle(t *testing.T) {
 
 func TestPartialHealthCheckDeliversPersistedOutageOnce(t *testing.T) {
 	setupChannelAvailabilityNotificationTest(t, true, []string{"admin@example.com"})
-	channel := model.Channel{Name: "last-enabled", Status: common.ChannelStatusEnabled}
+	channel := model.Channel{Name: "last-enabled", Status: common.ChannelStatusEnabled, AutoBan: common.GetPointer(1)}
 	require.NoError(t, model.DB.Create(&channel).Error)
 	require.NoError(t, model.InitializeChannelAvailabilityState())
 	require.NoError(t, model.DB.Model(&channel).Update("status", common.ChannelStatusAutoDisabled).Error)

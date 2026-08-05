@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -66,6 +67,23 @@ func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewA
 		err = relay.GeminiHelper(c, info)
 	}
 	return err
+}
+
+// channelSelectionFirstResponseMillis records TTFT only when an attempt has a
+// real first upstream output. Non-streaming responses have no TTFT
+// observation, so their full response duration must not be mislabeled as
+// first-token latency.
+func channelSelectionFirstResponseMillis(info *relaycommon.RelayInfo, attemptStartedAt time.Time) int64 {
+	if info == nil {
+		return 0
+	}
+	if !info.IsStream {
+		return 0
+	}
+	if firstResponse := info.AttemptFirstResponseTime(); firstResponse.After(attemptStartedAt) {
+		return firstResponse.Sub(attemptStartedAt).Milliseconds()
+	}
+	return 0
 }
 
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
@@ -186,6 +204,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.LastError = nil
 	var lastChannelError *types.ChannelError
 	lastMultiKeyIndex := 0
+	selectionBarrierAttempts := 0
 
 	for {
 		relayInfo.RetryIndex = retryParam.GetRetry()
@@ -224,12 +243,40 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			break
 		}
+		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+		usingKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+		validatedChannel, validationErr := model.ValidateChannelAttempt(channel.Id, keyIndex, usingKey)
+		if validationErr != nil {
+			if c.Request.Context().Err() != nil {
+				newAPIError = relayInfo.LastError
+				service.UpdateRetryTraceDecision(c, "client_cancelled", "cancelled")
+				break
+			}
+			if _, fixedChannel := c.Get("specific_channel_id"); fixedChannel {
+				newAPIError = types.NewError(validationErr, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+				break
+			}
+			if !excludeStaleChannelAttempt(retryParam, channel, keyIndex, validationErr) {
+				newAPIError = types.NewError(validationErr, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+				service.UpdateRetryTraceDecision(c, "selection_failed", "failed")
+				break
+			}
+			selectionBarrierAttempts++
+			if relayInfo.ChannelMeta == nil {
+				relayInfo.ChannelMeta = &relaycommon.ChannelMeta{}
+			}
+			if selectionBarrierAttempts >= 32 {
+				newAPIError = relayInfo.LastError
+				if newAPIError == nil {
+					newAPIError = types.NewError(validationErr, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+				}
+				service.UpdateRetryTraceDecision(c, "candidate_exhausted", "failed")
+				break
+			}
+			continue
+		}
+		channel = validatedChannel
 
-		retryParam.RecordSelection(channel.Id, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex), common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey))
-		service.AddUsedChannel(c, channel.Id)
-		lastMultiKeyIndex = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
-		lastChannelError = types.NewChannelError(channel.Id, channel.Type, channel.Name, common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey), common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan())
-		retryParam.StartAttemptTrace(channel)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
 			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
@@ -238,10 +285,29 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			} else {
 				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			}
-			retryParam.FinishAttemptTrace(newAPIError, 0, "stop", "request_error")
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		validatedChannel, validationErr = validateChannelAttemptForSend(c, channel)
+		if validationErr != nil {
+			newAPIError = types.NewError(validationErr, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+			if _, fixedChannel := c.Get("specific_channel_id"); fixedChannel || !excludeStaleChannelAttempt(retryParam, channel, keyIndex, validationErr) {
+				break
+			}
+			selectionBarrierAttempts++
+			if selectionBarrierAttempts >= 32 {
+				service.UpdateRetryTraceDecision(c, "candidate_exhausted", "failed")
+				break
+			}
+			continue
+		}
+		channel = validatedChannel
+		selectionBarrierAttempts = 0
+		retryParam.RecordSelection(channel.Id, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex), common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey))
+		service.AddUsedChannel(c, channel.Id)
+		lastMultiKeyIndex = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+		lastChannelError = types.NewChannelError(channel.Id, channel.Type, channel.Name, common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey), common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan())
+		retryParam.StartAttemptTrace(channel)
 		attemptStartedAt := time.Now()
 		relayInfo.BeginAttempt()
 
@@ -256,16 +322,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = relayHandler(c, relayInfo)
 		}
 		zeroTokenFailure := newAPIError == nil && common.GetContextKeyBool(c, constant.ContextKeyZeroTokenFailure)
-		if newAPIError == nil || zeroTokenFailure || !types.IsSkipRetryError(newAPIError) {
-			firstResponseMillis := int64(0)
-			attemptFirstResponseTime := relayInfo.AttemptFirstResponseTime()
-			if attemptFirstResponseTime.After(attemptStartedAt) {
-				firstResponseMillis = attemptFirstResponseTime.Sub(attemptStartedAt).Milliseconds()
-			} else if newAPIError == nil && !zeroTokenFailure {
-				// Non-stream responses have no earlier token callback; the complete
-				// valid response is their first observable output.
-				firstResponseMillis = time.Since(attemptStartedAt).Milliseconds()
-			}
+		if retryParam.UsesAdaptiveSamePrioritySelection() && (newAPIError == nil || zeroTokenFailure || !types.IsSkipRetryError(newAPIError)) {
+			firstResponseMillis := channelSelectionFirstResponseMillis(relayInfo, attemptStartedAt)
 			model.RecordChannelSelectionOutcome(channel.Id, relayInfo.OriginModelName, newAPIError == nil && !zeroTokenFailure, firstResponseMillis)
 		}
 
@@ -348,7 +406,37 @@ func finalizeSuccessfulRelayAttempt(c *gin.Context, channel *model.Channel) {
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey), usingKey, channel.GetAutoBan()), err)
 		return
 	}
-	service.RecordChannelSuccess(channel.Id, usingKey)
+	if common.AutomaticDisableChannelEnabled && channel.GetAutoBan() {
+		service.RecordChannelSuccess(channel.Id, usingKey)
+	}
+}
+
+func excludeStaleChannelAttempt(retryParam *service.RetryParam, channel *model.Channel, keyIndex int, err error) bool {
+	if !errors.Is(err, model.ErrChannelAttemptDisabled) &&
+		!errors.Is(err, model.ErrChannelKeyDisabled) &&
+		!errors.Is(err, model.ErrChannelKeyChanged) {
+		return false
+	}
+	if errors.Is(err, model.ErrChannelAttemptDisabled) {
+		retryParam.MarkChannelUnavailable(channel)
+	} else {
+		retryParam.MarkKeyUnavailable(channel.Id, keyIndex)
+	}
+	if common.MemoryCacheEnabled {
+		model.InitChannelCache()
+	}
+	return true
+}
+
+func validateChannelAttemptForSend(c *gin.Context, channel *model.Channel) (*model.Channel, error) {
+	if channel == nil {
+		return nil, errors.New("channel is unavailable")
+	}
+	return model.ValidateChannelAttempt(
+		channel.Id,
+		common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
+		common.GetContextKeyString(c, constant.ContextKeyChannelKey),
+	)
 }
 
 var upgrader = websocket.Upgrader{
@@ -465,19 +553,47 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) bool {
+	return processChannelErrorWithCounting(c, channelError, err, true)
+}
+
+func processHealthCheckChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) bool {
+	return processChannelErrorWithCounting(c, channelError, err, false)
+}
+
+func processChannelErrorWithCounting(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, countFailure bool) bool {
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
-	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
-	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
-	clientGone := c.Request != nil && c.Request.Context().Err() != nil && err.StatusCode == 499 && err.GetErrorCode() == types.ErrorCodeDoRequestFailed
-	shouldDisable := !clientGone && service.ShouldDisableChannel(err) && channelError.AutoBan &&
-		service.RecordChannelFailure(channelError.ChannelId, channelError.UsingKey, common.AutoDisableTolerance)
-	if shouldDisable {
-		if c.GetBool(channelAvailabilityDeferredContextKey) {
-			service.DisableChannelDeferredAvailability(channelError, err.ErrorWithStatusCode())
+	shouldDisable := false
+	var requestContext context.Context
+	if c != nil && c.Request != nil {
+		requestContext = c.Request.Context()
+	}
+	if common.AutomaticDisableChannelEnabled && channelError.AutoBan && service.IsAttributableChannelFailure(requestContext, err) {
+		if countFailure {
+			claimToken, recordErr := service.ClaimChannelFailureWithError(channelError.ChannelId, channelError.UsingKey, common.AutoDisableTolerance)
+			if recordErr != nil {
+				common.SysLog(fmt.Sprintf("failed to record channel failure #%d: %v", channelError.ChannelId, recordErr))
+			} else if claimToken != "" {
+				deferredAvailability := c.GetBool(channelAvailabilityDeferredContextKey)
+				reason := err.ErrorWithStatusCode()
+				disableSucceeded := false
+				completeClaim := func() {
+					disableSucceeded = service.DisableChannelWithClaim(channelError, reason, claimToken, !deferredAvailability)
+					if completeErr := service.CompleteChannelAutoDisable(channelError.ChannelId, channelError.UsingKey, claimToken, disableSucceeded); completeErr != nil {
+						common.SysLog(fmt.Sprintf("failed to complete channel failure claim #%d: %v", channelError.ChannelId, completeErr))
+					}
+				}
+				if deferredAvailability {
+					completeClaim()
+				} else {
+					gopool.Go(completeClaim)
+				}
+				// A claimed production request is reported as scheduled even when
+				// the deferred mutation later fails; the claim completion path
+				// retains or releases the evidence based on the actual result.
+				shouldDisable = true
+			}
 		} else {
-			gopool.Go(func() {
-				service.DisableChannel(channelError, err.ErrorWithStatusCode())
-			})
+			shouldDisable = service.DisableChannelDeferredAvailability(channelError, err.ErrorWithStatusCode())
 		}
 	}
 	recordChannelErrorLog(c, channelError, err, false, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex))
@@ -550,6 +666,25 @@ func RelayMidjourney(c *gin.Context) {
 			"code":        4,
 		})
 		return
+	}
+	requiresChannelAttempt := relayInfo.RelayMode != relayconstant.RelayModeMidjourneyNotify &&
+		relayInfo.RelayMode != relayconstant.RelayModeMidjourneyTaskFetch &&
+		relayInfo.RelayMode != relayconstant.RelayModeMidjourneyTaskFetchByCondition
+	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	if requiresChannelAttempt && channelID > 0 {
+		_, validationErr := model.ValidateChannelAttempt(
+			channelID,
+			common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
+			common.GetContextKeyString(c, constant.ContextKeyChannelKey),
+		)
+		if validationErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"description": validationErr.Error(),
+				"type":        "channel_unavailable",
+				"code":        4,
+			})
+			return
+		}
 	}
 
 	var mjErr *taskdto.MidjourneyResponse
@@ -663,7 +798,45 @@ func RelayTask(c *gin.Context) {
 		var channel *model.Channel
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
-			channel = lockedCh
+			freshChannel, refreshErr := model.GetChannelById(lockedCh.Id, true)
+			if refreshErr != nil {
+				taskErr = service.TaskErrorWrapperLocal(refreshErr, "task_channel_not_found", http.StatusBadRequest)
+				break
+			}
+			channel = freshChannel
+			relayInfo.LockedChannel = freshChannel
+			if channel.Status != common.ChannelStatusEnabled {
+				taskErr = service.TaskErrorWrapperLocal(model.ErrChannelAttemptDisabled, "task_channel_disabled", http.StatusBadRequest)
+				break
+			}
+			if retryParam.GetRetry() == 0 {
+				currentKeyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+				currentKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+				if _, validationErr := model.ValidateChannelAttempt(channel.Id, currentKeyIndex, currentKey); validationErr != nil {
+					if !retryParam.Setting.TryOtherKeys {
+						taskErr = service.TaskErrorWrapperLocal(validationErr, "task_channel_disabled", http.StatusBadRequest)
+						break
+					}
+					excluded := retryParam.ExcludedKeyIndexes(channel.Id)
+					if excluded == nil {
+						excluded = make(map[int]struct{})
+					} else {
+						copyExcluded := make(map[int]struct{}, len(excluded)+1)
+						for index := range excluded {
+							copyExcluded[index] = struct{}{}
+						}
+						excluded = copyExcluded
+					}
+					if currentKeyIndex >= 0 {
+						excluded[currentKeyIndex] = struct{}{}
+					}
+					setupErr := middleware.SetupContextForSelectedChannelWithKeyExclusions(c, channel, relayInfo.OriginModelName, excluded)
+					if setupErr != nil {
+						taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "task_channel_no_available_key", http.StatusBadRequest)
+						break
+					}
+				}
+			}
 			exhausted, setupErr := setupLockedTaskRetryChannel(c, channel, relayInfo.OriginModelName, retryParam)
 			if exhausted {
 				service.UpdateRetryTraceDecision(c, "candidate_exhausted", "failed")
@@ -691,6 +864,14 @@ func RelayTask(c *gin.Context) {
 				break
 			}
 		}
+		if channel != nil {
+			validatedChannel, validationErr := model.ValidateChannelAttempt(channel.Id, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex), common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+			if validationErr != nil {
+				taskErr = service.TaskErrorWrapperLocal(validationErr, "task_channel_disabled", http.StatusBadRequest)
+				break
+			}
+			channel = validatedChannel
+		}
 		if retryParam.GetRetry() > 0 && !retryParam.CanStartRetryAttempt() {
 			if c.Request.Context().Err() != nil {
 				service.UpdateRetryTraceDecision(c, "client_cancelled", "cancelled")
@@ -701,11 +882,6 @@ func RelayTask(c *gin.Context) {
 			break
 		}
 
-		retryParam.RecordSelection(channel.Id, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex), common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey))
-		service.AddUsedChannel(c, channel.Id)
-		lastMultiKeyIndex = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
-		lastChannelError = types.NewChannelError(channel.Id, channel.Type, channel.Name, common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey), common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan())
-		retryParam.StartAttemptTrace(channel)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
 			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
@@ -713,23 +889,40 @@ func RelayTask(c *gin.Context) {
 			} else {
 				taskErr = service.TaskErrorWrapperLocal(bodyErr, "read_request_body_failed", http.StatusBadRequest)
 			}
-			retryParam.FinishAttemptTrace(types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, taskErr.StatusCode), 0, "stop", "request_error")
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		validatedChannel, validationErr := validateChannelAttemptForSend(c, channel)
+		if validationErr != nil {
+			taskErr = service.TaskErrorWrapperLocal(validationErr, "task_channel_disabled", http.StatusBadRequest)
+			break
+		}
+		channel = validatedChannel
+		if relayInfo.LockedChannel != nil {
+			relayInfo.LockedChannel = validatedChannel
+		}
+		retryParam.RecordSelection(channel.Id, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex), common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey))
+		service.AddUsedChannel(c, channel.Id)
+		lastMultiKeyIndex = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+		lastChannelError = types.NewChannelError(channel.Id, channel.Type, channel.Name, common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey), common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan())
+		retryParam.StartAttemptTrace(channel)
 
 		attemptStartedAt := time.Now()
 		relayInfo.BeginAttempt()
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
 			retryParam.FinishAttemptTrace(nil, 0, "complete", "success")
-			service.RecordChannelSuccess(channel.Id, common.GetContextKeyString(c, constant.ContextKeyChannelKey))
-			model.RecordChannelSelectionOutcome(channel.Id, relayInfo.OriginModelName, true, time.Since(attemptStartedAt).Milliseconds())
+			if common.AutomaticDisableChannelEnabled && channel.GetAutoBan() {
+				service.RecordChannelSuccess(channel.Id, common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+			}
+			if retryParam.UsesAdaptiveSamePrioritySelection() {
+				model.RecordChannelSelectionOutcome(channel.Id, relayInfo.OriginModelName, true, channelSelectionFirstResponseMillis(relayInfo, attemptStartedAt))
+			}
 			break
 		}
 
 		taskAPIError := taskErrorAsAPIError(taskErr)
-		if !taskErr.LocalError && service.ShouldDisableChannel(taskAPIError) {
+		if retryParam.UsesAdaptiveSamePrioritySelection() && !taskErr.LocalError && service.IsAttributableChannelFailure(c.Request.Context(), taskAPIError) {
 			model.RecordChannelSelectionOutcome(channel.Id, relayInfo.OriginModelName, false, 0)
 		}
 		retryable := shouldRetryTaskRelay(c, channel.Id, taskErr, 1)

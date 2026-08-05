@@ -2,11 +2,13 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -19,6 +21,37 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type responseWriteFailureWriter struct {
+	gin.ResponseWriter
+	match  string
+	failed bool
+}
+
+type cancelAfterPayloadReadCloser struct {
+	reader *strings.Reader
+	cancel context.CancelFunc
+}
+
+func (reader *cancelAfterPayloadReadCloser) Read(buffer []byte) (int, error) {
+	read, err := reader.reader.Read(buffer)
+	if err == io.EOF {
+		reader.cancel()
+	}
+	return read, err
+}
+
+func (reader *cancelAfterPayloadReadCloser) Close() error {
+	return nil
+}
+
+func (w *responseWriteFailureWriter) Write(data []byte) (int, error) {
+	if !w.failed && w.match != "" && strings.Contains(string(data), w.match) {
+		w.failed = true
+		return 0, errors.New("synthetic downstream write failure")
+	}
+	return w.ResponseWriter.Write(data)
+}
 
 func newResponsesStreamTestContext(t *testing.T, body string) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()
@@ -51,6 +84,13 @@ func setZeroTokenFailureForResponsesTest(t *testing.T, enabled bool) {
 	t.Cleanup(func() {
 		require.True(t, config.GlobalConfig.Update("monitor_setting", map[string]string{"zero_token_as_failure": common.Interface2String(previous)}))
 	})
+}
+
+func setResponsesStreamTimeoutForTest(t *testing.T) {
+	t.Helper()
+	previous := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previous })
 }
 
 func TestResponsesStreamMeaningfulOutput(t *testing.T) {
@@ -141,6 +181,170 @@ func TestOaiResponsesStreamHandlerFlushesPreludeWithFirstMeaningfulOutput(t *tes
 		`event: response.output_text.delta`,
 		`event: response.completed`,
 	)
+}
+
+func TestOaiResponsesStreamHandlerCompletesWithoutDoneSentinel(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newResponsesStreamTestContext(t, body)
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 2, usage.PromptTokens)
+	assert.Equal(t, 1, usage.CompletionTokens)
+	assert.Equal(t, 3, usage.TotalTokens)
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.Contains(t, recorder.Body.String(), `event: response.completed`)
+}
+
+func TestOaiResponsesStreamHandlerSettlesWhenClientCancelsAfterCompleted(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := `data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}` + "\n"
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+	requestContext, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(requestContext)
+	resp.Body = &cancelAfterPayloadReadCloser{reader: strings.NewReader(body), cancel: cancel}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 2, usage.PromptTokens)
+	assert.Equal(t, 1, usage.CompletionTokens)
+	assert.Equal(t, 3, usage.TotalTokens)
+}
+
+func TestOaiResponsesStreamHandlerCountsTerminalTextWhenUsageIsMissing(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+
+	body := `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"terminal text"}]}]}}` + "\n"
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+	info.UpstreamModelName = "compat-model"
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Greater(t, usage.CompletionTokens, 0)
+	assert.Greater(t, usage.TotalTokens, 0)
+}
+
+func TestOaiResponsesStreamHandlerRejectsFailedTerminalEvent(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"type":"server_error","message":"upstream failed"}}}`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newResponsesStreamTestContext(t, body)
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	assert.Contains(t, apiErr.Error(), "upstream failed")
+	assert.Empty(t, recorder.Body.String())
+}
+
+func TestOaiResponsesStreamHandlerRecordsTTFTAtFirstValidOutput(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		`data: {"type":"response.in_progress"}`,
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`,
+		``,
+	}, "\n")
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+	info.StartTime = time.Now().Add(-time.Second)
+	info.BeginAttempt()
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.False(t, info.AttemptFirstResponseTime().IsZero())
+	assert.True(t, info.AttemptFirstResponseTime().After(info.StartTime))
+}
+
+func TestOaiResponsesStreamHandlerDoesNotRecordTTFTForControlOnlyCompletion(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}}}`,
+		``,
+	}, "\n")
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+	info.StartTime = time.Now().Add(-time.Second)
+	info.BeginAttempt()
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.True(t, info.AttemptFirstResponseTime().IsZero())
+}
+
+func TestOaiResponsesStreamHandlerSettlesAfterCompletedTerminalWriteFailure(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := `data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n"
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+	c.Writer = &responseWriteFailureWriter{ResponseWriter: c.Writer, match: "response.completed"}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 2, usage.TotalTokens)
+}
+
+func TestOaiResponsesStreamHandlerRejectsWriteFailureBeforeCompleted(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		``,
+	}, "\n")
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+	c.Writer = &responseWriteFailureWriter{ResponseWriter: c.Writer, match: "response.output_text.delta"}
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	assert.Equal(t, 499, apiErr.StatusCode)
+}
+
+func TestOaiResponsesStreamHandlerPreservesTotalOnlyUsage(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	body := `data: {"type":"response.completed","response":{"status":"completed","usage":{"total_tokens":7}}}` + "\n"
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 7, usage.PromptTokens)
+	assert.Zero(t, usage.CompletionTokens)
+	assert.Equal(t, 7, usage.TotalTokens)
 }
 
 func TestOaiResponsesStreamHandlerKeepsLegacyMetadataOnlyBehaviorWhenDisabled(t *testing.T) {

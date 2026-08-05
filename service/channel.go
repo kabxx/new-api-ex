@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -16,25 +18,55 @@ func formatNotifyType(channelId int, status int) string {
 }
 
 // disable & notify
-func DisableChannel(channelError types.ChannelError, reason string) {
-	disableChannel(channelError, reason, true)
+func DisableChannel(channelError types.ChannelError, reason string) bool {
+	return disableChannel(channelError, reason, true)
 }
 
 func DisableChannelDeferredAvailability(channelError types.ChannelError, reason string) bool {
 	return disableChannel(channelError, reason, false)
 }
 
+func DisableChannelWithClaim(channelError types.ChannelError, reason string, claimToken string, evaluateAvailability bool) bool {
+	return disableChannelClaimed(channelError, reason, evaluateAvailability, claimToken)
+}
+
 func disableChannel(channelError types.ChannelError, reason string, evaluateAvailability bool) bool {
+	return disableChannelClaimed(channelError, reason, evaluateAvailability, "")
+}
+
+func disableChannelClaimed(channelError types.ChannelError, reason string, evaluateAvailability bool, claimToken string) bool {
 	common.SysLog(fmt.Sprintf("通道「%s」（#%d）发生错误，准备禁用，原因：%s", channelError.ChannelName, channelError.ChannelId, common.LocalLogPreview(reason)))
 
-	// 检查是否启用自动禁用功能
+	// The callers decide whether the automatic policy is enabled. This service
+	// function remains a direct status mutation API and only honors the channel
+	// level AutoBan flag, preserving existing callers and tests.
 	if !channelError.AutoBan {
 		common.SysLog(fmt.Sprintf("通道「%s」（#%d）未启用自动禁用功能，跳过禁用操作", channelError.ChannelName, channelError.ChannelId))
 		return false
 	}
 
-	success := model.UpdateChannelStatus(channelError.ChannelId, channelError.UsingKey, common.ChannelStatusAutoDisabled, reason)
-	if success {
+	var mutation model.ChannelStatusMutation
+	var err error
+	if claimToken == "" {
+		mutation, err = model.ApplyAutomaticChannelStatus(channelError.ChannelId, channelError.UsingKey, common.ChannelStatusAutoDisabled, reason)
+	} else if model.PersistentChannelFailureStateAvailable() {
+		mutation, err = model.ApplyAutomaticChannelStatusWithClaim(channelError.ChannelId, channelError.UsingKey, common.ChannelStatusAutoDisabled, reason, claimToken)
+	} else {
+		key := channelFailureKey(channelError.ChannelId, channelError.UsingKey)
+		channelFailCounts.Lock()
+		state := channelFailCounts.counts[key]
+		claimActive := state != nil && state.ThresholdReached && state.Claimed && state.ClaimToken == claimToken &&
+			!state.ClaimedAt.IsZero() && channelFailureNow().Sub(state.ClaimedAt) < 2*time.Minute
+		if claimActive {
+			mutation, err = model.ApplyAutomaticChannelStatus(channelError.ChannelId, channelError.UsingKey, common.ChannelStatusAutoDisabled, reason)
+		}
+		channelFailCounts.Unlock()
+	}
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to auto-disable channel #%d: %v", channelError.ChannelId, err))
+		return false
+	}
+	if mutation.ChannelChanged {
 		subject := fmt.Sprintf("通道「%s」（#%d）已被禁用", channelError.ChannelName, channelError.ChannelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被禁用，原因：%s", channelError.ChannelName, channelError.ChannelId, reason)
 		NotifyRootUser(formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content)
@@ -45,7 +77,7 @@ func disableChannel(channelError types.ChannelError, reason string, evaluateAvai
 			}
 		}
 	}
-	return success
+	return mutation.Changed()
 }
 
 func EnableChannel(channelId int, usingKey string, channelName string) {
@@ -57,8 +89,12 @@ func EnableChannelDeferredAvailability(channelId int, usingKey string, channelNa
 }
 
 func enableChannel(channelId int, usingKey string, channelName string, evaluateAvailability bool) bool {
-	success := model.UpdateChannelStatus(channelId, usingKey, common.ChannelStatusEnabled, "")
-	if success {
+	mutation, err := model.ApplyAutomaticChannelStatus(channelId, usingKey, common.ChannelStatusEnabled, "")
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to auto-enable channel #%d: %v", channelId, err))
+		return false
+	}
+	if mutation.ChannelChanged {
 		subject := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被启用", channelName, channelId)
 		NotifyRootUser(formatNotifyType(channelId, common.ChannelStatusEnabled), subject, content)
@@ -69,7 +105,7 @@ func enableChannel(channelId int, usingKey string, channelName string, evaluateA
 			}
 		}
 	}
-	return success
+	return mutation.Changed()
 }
 
 func ShouldDisableChannel(err *types.NewAPIError) bool {
@@ -92,6 +128,36 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	lowerMessage := strings.ToLower(err.Error())
 	search, _ := AcSearch(lowerMessage, operation_setting.AutomaticDisableKeywords, true)
 	return search
+}
+
+// IsAttributableChannelFailure separates an upstream attempt outcome from
+// retry policy.  Retryability is deliberately not used here: a 524, a 401,
+// and a provider transport error can all be evidence against a channel,
+// while request construction and client cancellation cannot.
+func IsAttributableChannelFailure(ctx context.Context, err *types.NewAPIError) bool {
+	if err == nil || (ctx != nil && ctx.Err() != nil) {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeInvalidRequest,
+		types.ErrorCodeSensitiveWordsDetected,
+		types.ErrorCodeCountTokenFailed,
+		types.ErrorCodeModelPriceError,
+		types.ErrorCodeInvalidApiType,
+		types.ErrorCodeJsonMarshalFailed,
+		types.ErrorCodeGetChannelFailed,
+		types.ErrorCodeGenRelayInfoFailed,
+		types.ErrorCodeReadRequestBodyFailed,
+		types.ErrorCodeConvertRequestFailed,
+		types.ErrorCodeAccessDenied,
+		types.ErrorCodeBadRequestBody,
+		types.ErrorCodePreConsumeTokenQuotaFailed:
+		return false
+	case types.ErrorCodeDoRequestFailed:
+		return err.StatusCode != 499
+	default:
+		return true
+	}
 }
 
 func ShouldEnableChannel(newAPIError *types.NewAPIError, status int) bool {

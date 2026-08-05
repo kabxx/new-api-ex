@@ -69,6 +69,25 @@ func TestOaiResponsesHandlerCountsOutputCallsNotDeclarations(t *testing.T) {
 	assert.NotContains(t, info.ResponsesUsageInfo.BuiltInTools, "unpriced_fn")
 }
 
+func TestOaiResponsesStreamHandlerCountsCompletedOnlyToolOutputOnce(t *testing.T) {
+	setZeroTokenFailureForResponsesTest(t, true)
+	setResponsesStreamTimeoutForTest(t)
+	item := `{"type":"web_search_call","id":"search_1","status":"completed"}`
+	body := strings.Join([]string{
+		`data: {"type":"response.output_item.done","output_index":0,"item":` + item + `}`,
+		`data: {"type":"response.completed","response":{"status":"completed","output":[` + item + `],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		``,
+	}, "\n")
+	c, _, resp, info := newResponsesStreamTestContext(t, body)
+
+	usage, apiErr := OaiResponsesStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.NotNil(t, info.ResponsesUsageInfo)
+	assert.Equal(t, 1, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview].CallCount)
+}
+
 func TestOaiResponsesHandlerDeclaredToolsWithoutOutputCountZero(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -752,6 +752,7 @@ func DeleteChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	service.ClearChannelFailureMemoryForChannel(id)
 	model.InitChannelCache()
 	if channelLookupFailed {
 		service.ResetProxyClientCache()
@@ -820,6 +821,9 @@ func DisableTagChannels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	for _, channel := range related {
+		service.ClearChannelFailureMemoryForChannel(channel.Id)
+	}
 	model.InitChannelCache()
 	evaluateChannelAvailability(service.ChannelAvailabilitySourceTag, channelAvailabilityReferences(related))
 	recordManageAudit(c, "channel.tag_disable", map[string]interface{}{
@@ -847,6 +851,9 @@ func EnableTagChannels(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	for _, channel := range related {
+		service.ClearChannelFailureMemoryForChannel(channel.Id)
 	}
 	model.InitChannelCache()
 	evaluateChannelAvailability(service.ChannelAvailabilitySourceTag, channelAvailabilityReferences(related))
@@ -941,6 +948,9 @@ func DeleteChannelBatch(c *gin.Context) {
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	for _, channel := range relatedChannels {
+		service.ClearChannelFailureMemoryForChannel(channel.Id)
 	}
 	model.InitChannelCache()
 	if deletedCount > 0 {
@@ -1114,10 +1124,19 @@ func UpdateChannel(c *gin.Context) {
 			// 覆盖模式：直接使用新密钥（默认行为，不需要特殊处理）
 		}
 	}
+	keyChanged := channel.Key != "" && channel.Key != originChannel.Key
 	err = channel.Update()
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if keyChanged {
+		if resetErr := service.ResetChannelFailureStatesForChannel(channel.Id); resetErr != nil {
+			common.SysLog(fmt.Sprintf("failed to reset channel failure state #%d after key change: %v", channel.Id, resetErr))
+		}
+		if resetErr := model.ResetChannelSelectionMetricsForChannel(channel.Id); resetErr != nil {
+			common.SysLog(fmt.Sprintf("failed to reset channel selection metrics #%d after key change: %v", channel.Id, resetErr))
+		}
 	}
 	evaluateChannelAvailability(service.ChannelAvailabilitySourceMultiKey, []service.ChannelAvailabilityRelatedChannel{{ID: channel.Id, Name: channel.Name}})
 	model.InitChannelCache()
@@ -1167,9 +1186,13 @@ func UpdateChannelStatus(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	changed := model.UpdateChannelStatus(id, "", req.Status, "manual operation")
-	if changed {
-		model.InitChannelCache()
+	mutation, err := model.ApplyManualChannelStatus(id, req.Status, "manual operation")
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	service.ClearChannelFailureMemoryForChannel(id)
+	if mutation.ChannelChanged {
 		channelName := ""
 		if channel, getErr := model.GetChannelById(id, false); getErr == nil {
 			channelName = channel.Name
@@ -1179,12 +1202,12 @@ func UpdateChannelStatus(c *gin.Context) {
 	recordManageAudit(c, "channel.status_update", map[string]interface{}{
 		"id":      id,
 		"status":  req.Status,
-		"changed": changed,
+		"changed": mutation.ChannelChanged,
 	})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    changed,
+		"data":    mutation.ChannelChanged,
 	})
 }
 
@@ -1194,16 +1217,20 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	changedCount := 0
 	var relatedChannels []*model.Channel
-	_ = model.DB.Select("id", "name").Where("id IN ?", req.Ids).Find(&relatedChannels).Error
+	if err := model.DB.Select("id", "name").Where("id IN ?", req.Ids).Find(&relatedChannels).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	changedCount, err := model.ApplyManualChannelStatuses(req.Ids, req.Status, "manual batch operation")
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	for _, id := range req.Ids {
-		if model.UpdateChannelStatus(id, "", req.Status, "manual batch operation") {
-			changedCount++
-		}
+		service.ClearChannelFailureMemoryForChannel(id)
 	}
 	if changedCount > 0 {
-		model.InitChannelCache()
 		evaluateChannelAvailability(service.ChannelAvailabilitySourceManualBatch, channelAvailabilityReferences(relatedChannels))
 	}
 	recordManageAudit(c, "channel.status_update_batch", map[string]interface{}{
@@ -1570,6 +1597,49 @@ func ManageMultiKeys(c *gin.Context) {
 			"action": request.Action,
 			"id":     channel.Id,
 		})
+	}
+	if request.Action != "get_key_status" {
+		supported := request.Action == "disable_key" || request.Action == "enable_key" ||
+			request.Action == "enable_all_keys" || request.Action == "disable_all_keys" ||
+			request.Action == "delete_key" || request.Action == "delete_disabled_keys"
+		if !supported {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "不支持的操作"})
+			return
+		}
+		if (request.Action == "disable_key" || request.Action == "enable_key" || request.Action == "delete_key") && request.KeyIndex == nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "未指定密钥索引"})
+			return
+		}
+		mutation, mutationErr := model.ApplyManualMultiKeyMutation(request.ChannelId, request.Action, request.KeyIndex)
+		if mutationErr != nil {
+			common.ApiError(c, mutationErr)
+			return
+		}
+		service.ClearChannelFailureMemoryForChannel(request.ChannelId)
+		if !mutation.Changed() {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "没有可变更的密钥"})
+			return
+		}
+		if mutation.ChannelChanged {
+			evaluateChannelAvailability(service.ChannelAvailabilitySourceMultiKey, []service.ChannelAvailabilityRelatedChannel{{ID: channel.Id, Name: channel.Name}})
+		}
+		message := "密钥状态已更新"
+		switch request.Action {
+		case "disable_key":
+			message = "密钥已禁用"
+		case "enable_key":
+			message = "密钥已启用"
+		case "enable_all_keys":
+			message = fmt.Sprintf("已启用 %d 个密钥", mutation.ChangedKeys)
+		case "disable_all_keys":
+			message = fmt.Sprintf("已禁用 %d 个密钥", mutation.ChangedKeys)
+		case "delete_key":
+			message = "密钥已删除"
+		case "delete_disabled_keys":
+			message = fmt.Sprintf("已删除 %d 个自动禁用的密钥", mutation.ChangedKeys)
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": message, "data": mutation.ChangedKeys})
+		return
 	}
 	availabilityChanged := false
 	defer func() {

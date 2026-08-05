@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,10 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 }
 
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+	return testChannelWithKey(ctx, channel, testUserID, testModel, endpointType, isStream, nil)
+}
+
+func testChannelWithKey(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, forcedKeyIndex *int) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -174,7 +179,31 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	group, _ := model.GetUserGroup(testUserID, false)
 	c.Set("group", group)
 
-	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, testModel)
+	channelForTest := channel
+	var excludedKeyIndexes map[int]struct{}
+	if forcedKeyIndex != nil {
+		keys := channel.GetKeys()
+		if *forcedKeyIndex < 0 || *forcedKeyIndex >= len(keys) {
+			return testResult{context: c, localErr: errors.New("channel test key index is out of range")}
+		}
+		clone := *channel
+		clone.Keys = append([]string(nil), keys...)
+		clone.ChannelInfo = channel.ChannelInfo
+		clone.ChannelInfo.MultiKeyMode = constant.MultiKeyModeRandom
+		clone.ChannelInfo.MultiKeyStatusList = make(map[int]int, len(channel.ChannelInfo.MultiKeyStatusList))
+		for index, status := range channel.ChannelInfo.MultiKeyStatusList {
+			clone.ChannelInfo.MultiKeyStatusList[index] = status
+		}
+		delete(clone.ChannelInfo.MultiKeyStatusList, *forcedKeyIndex)
+		channelForTest = &clone
+		excludedKeyIndexes = make(map[int]struct{}, len(keys)-1)
+		for index := range keys {
+			if index != *forcedKeyIndex {
+				excludedKeyIndexes[index] = struct{}{}
+			}
+		}
+	}
+	newAPIError := middleware.SetupContextForSelectedChannelWithKeyExclusions(c, channelForTest, testModel, excludedKeyIndexes)
 	if newAPIError != nil {
 		return testResult{
 			context:     c,
@@ -921,7 +950,6 @@ func TestChannel(c *gin.Context) {
 		})
 		return
 	}
-	service.RecordChannelSuccess(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -939,6 +967,50 @@ type channelTestSummary struct {
 	Enabled   int `json:"enabled"`
 }
 
+type automaticChannelTestTarget struct {
+	channel              *model.Channel
+	forcedKeyIndex       *int
+	recoveryUsesWholeKey bool
+}
+
+func automaticChannelTestTargets(channels []*model.Channel) []automaticChannelTestTarget {
+	targets := make([]automaticChannelTestTarget, 0, len(channels))
+	for _, channel := range channels {
+		if channel == nil || channel.Status == common.ChannelStatusManuallyDisabled {
+			continue
+		}
+		if !channel.ChannelInfo.IsMultiKey {
+			targets = append(targets, automaticChannelTestTarget{channel: channel})
+			continue
+		}
+		autoDisabledIndexes := make([]int, 0)
+		hasExplicitlyDisabledKey := false
+		for index, status := range channel.ChannelInfo.MultiKeyStatusList {
+			if index < 0 || index >= len(channel.GetKeys()) {
+				continue
+			}
+			if status != common.ChannelStatusEnabled {
+				hasExplicitlyDisabledKey = true
+			}
+			if status == common.ChannelStatusAutoDisabled {
+				autoDisabledIndexes = append(autoDisabledIndexes, index)
+			}
+		}
+		sort.Ints(autoDisabledIndexes)
+		if channel.Status == common.ChannelStatusEnabled {
+			targets = append(targets, automaticChannelTestTarget{channel: channel})
+		}
+		for _, index := range autoDisabledIndexes {
+			keyIndex := index
+			targets = append(targets, automaticChannelTestTarget{channel: channel, forcedKeyIndex: &keyIndex})
+		}
+		if channel.Status == common.ChannelStatusAutoDisabled && len(autoDisabledIndexes) == 0 && !hasExplicitlyDisabledKey {
+			targets = append(targets, automaticChannelTestTarget{channel: channel, recoveryUsesWholeKey: true})
+		}
+	}
+	return targets
+}
+
 const channelAvailabilityDeferredContextKey = "channel_availability_notification_deferred"
 
 // performChannelTests runs the channel test loop synchronously, honoring ctx
@@ -954,8 +1026,10 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		disableThreshold = 10000000 // a impossible value
 	}
 
-	total := len(channels)
-	for index, channel := range channels {
+	targets := automaticChannelTestTargets(channels)
+	total := len(targets)
+	for index, target := range targets {
+		channel := target.channel
 		if ctx != nil && ctx.Err() != nil {
 			completed = false
 			break
@@ -963,12 +1037,9 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 		if report != nil {
 			report(index, total) // channels completed before this one
 		}
-		if channel.Status == common.ChannelStatusManuallyDisabled {
-			continue
-		}
 		isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 		tik := time.Now()
-		result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel))
+		result := testChannelWithKey(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel), target.forcedKeyIndex)
 		tok := time.Now()
 		milliseconds := tok.Sub(tik).Milliseconds()
 		if ctx != nil && ctx.Err() != nil {
@@ -980,9 +1051,10 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 
 		shouldBanChannel := false
 		newAPIError := result.newAPIError
-		// request error disables the channel
-		if newAPIError != nil {
-			shouldBanChannel = service.ShouldDisableChannel(result.newAPIError)
+		// Health checks retain their direct disable action. They do not add
+		// synthetic samples to the production request failure policy.
+		if newAPIError != nil && result.localErr == nil && common.AutomaticDisableChannelEnabled {
+			shouldBanChannel = service.IsAttributableChannelFailure(result.context.Request.Context(), newAPIError)
 		}
 
 		// 当错误检查通过，才检查响应时间
@@ -994,27 +1066,34 @@ func performChannelTests(ctx context.Context, channels []*model.Channel, testUse
 			}
 		}
 
-		usingKey := common.GetContextKeyString(result.context, constant.ContextKeyChannelKey)
+		usingKey := ""
+		if result.context != nil {
+			usingKey = common.GetContextKeyString(result.context, constant.ContextKeyChannelKey)
+		}
 		if result.localErr == nil && newAPIError == nil {
 			summary.Succeeded++
-			service.RecordChannelSuccess(channel.Id, usingKey)
 		} else {
 			summary.Failed++
 		}
 
 		// disable channel
-		if allowDisable && isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
+		if allowDisable && target.forcedKeyIndex == nil && isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
 			result.context.Set(channelAvailabilityDeferredContextKey, true)
-			if processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, usingKey, channel.GetAutoBan()), newAPIError) {
+			if processHealthCheckChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, usingKey, channel.GetAutoBan()), newAPIError) {
 				summary.Disabled++
 				relatedChannels = append(relatedChannels, service.ChannelAvailabilityRelatedChannel{ID: channel.Id, Name: channel.Name})
 			}
 		}
 
 		// enable channel
-		if result.localErr == nil && !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
-			if service.EnableChannelDeferredAvailability(channel.Id, usingKey, channel.Name) {
-				service.ResetChannelFailCount(channel.Id, usingKey)
+		shouldRecover := target.forcedKeyIndex != nil || (!isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status))
+		if result.localErr == nil && newAPIError == nil && shouldRecover {
+			recoveryKey := usingKey
+			if target.recoveryUsesWholeKey {
+				recoveryKey = ""
+			}
+			if service.EnableChannelDeferredAvailability(channel.Id, recoveryKey, channel.Name) {
+				_ = service.RecordChannelRecovery(channel.Id, recoveryKey)
 				summary.Enabled++
 				relatedChannels = append(relatedChannels, service.ChannelAvailabilityRelatedChannel{ID: channel.Id, Name: channel.Name})
 			}
