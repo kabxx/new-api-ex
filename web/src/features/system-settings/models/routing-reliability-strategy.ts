@@ -35,8 +35,25 @@ export const DEFAULT_AUTO_DISABLE_POLICY = {
 }
 
 export const MAX_AUTO_DISABLE_OBSERVATIONS = 10000
+export const MAX_FIRST_OUTPUT_TIMEOUT_SECONDS = 600
 
 type TranslateValidationMessage = (key: string) => string
+
+export function createFirstOutputTimeoutSchema(
+  translate: TranslateValidationMessage
+) {
+  const message = translate('Enter an integer from 0 to 600 seconds')
+  return z.coerce
+    .number({ error: message })
+    .refine(
+      (value) =>
+        Number.isFinite(value) &&
+        Number.isSafeInteger(value) &&
+        value >= 0 &&
+        value <= MAX_FIRST_OUTPUT_TIMEOUT_SECONDS,
+      message
+    )
+}
 
 function createPositiveSafeIntegerSchema(
   translate: TranslateValidationMessage

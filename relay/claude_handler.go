@@ -148,9 +148,13 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		if newApiErr != nil {
 			return newApiErr
 		}
+		if !info.IsStream {
+			info.SetFirstResponseTime()
+		}
 
-		service.PostTextConsumeQuota(c, info, usage, nil)
-		return nil
+		return settleCompletedAttempt(info, func() {
+			service.PostTextConsumeQuota(c, info, usage, nil)
+		})
 	}
 
 	var requestBody io.Reader
@@ -221,7 +225,11 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
+	if !info.IsStream {
+		info.SetFirstResponseTime()
+	}
 
-	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
-	return nil
+	return settleCompletedAttempt(info, func() {
+		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+	})
 }

@@ -17,6 +17,7 @@ type MonitorSetting struct {
 	AutoTestChannelMinutes              float64  `json:"auto_test_channel_minutes"`
 	ChannelTestMode                     string   `json:"channel_test_mode"`
 	ZeroTokenAsFailure                  bool     `json:"zero_token_as_failure"`
+	FirstTokenTimeoutSeconds            int      `json:"first_token_timeout_seconds"`
 	AutoDisableStrategy                 string   `json:"auto_disable_strategy"`
 	AutoDisableWindowMinutes            int      `json:"auto_disable_window_minutes"`
 	AutoDisableWindowFailures           int      `json:"auto_disable_window_failures"`
@@ -44,6 +45,7 @@ var monitorSetting = MonitorSetting{
 	AutoTestChannelMinutes:              10,
 	ChannelTestMode:                     ChannelTestModeScheduledAll,
 	ZeroTokenAsFailure:                  false,
+	FirstTokenTimeoutSeconds:            0,
 	AutoDisableStrategy:                 AutoDisableStrategyConsecutive,
 	AutoDisableWindowMinutes:            10,
 	AutoDisableWindowFailures:           5,
@@ -127,6 +129,11 @@ func ValidateMonitorOption(key, value string) error {
 	case "monitor_setting.auto_test_channel_enabled", "monitor_setting.zero_token_as_failure":
 		if _, err := strconv.ParseBool(value); err != nil {
 			return fmt.Errorf("%s must be a boolean", key)
+		}
+	case "monitor_setting.first_token_timeout_seconds":
+		seconds, err := strconv.Atoi(value)
+		if err != nil || seconds < 0 || seconds > 600 {
+			return fmt.Errorf("%s must be an integer between 0 and 600", key)
 		}
 	case "monitor_setting.auto_test_channel_minutes":
 		minutes, err := strconv.ParseFloat(value, 64)

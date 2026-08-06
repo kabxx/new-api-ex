@@ -5319,6 +5319,9 @@
     "Disable when the recent failure rate reaches this percentage.": "近期失敗率達到此百分比時停用。",
     "Enter a positive safe integer": "請輸入正安全整數",
     "Enter a finite percentage greater than 0 and at most 100": "請輸入大於 0 且不超過 100 的有限百分比",
-    "Minimum samples cannot exceed the recent sample size": "最少樣本數不能超過近期樣本數"
+    "Minimum samples cannot exceed the recent sample size": "最少樣本數不能超過近期樣本數",
+    "First output timeout (seconds)": "首個輸出逾時（秒）",
+    "Timing starts when the upstream request is sent. 0 disables this text-generation check. Control events do not count; image, audio, embedding, and task modes are excluded. A timed-out attempt is cancelled, counted as a channel failure, and retried when allowed.": "從真正發起上游請求時開始計時。0 表示關閉此文字生成檢查；控制事件不算有效輸出，圖片、音訊、Embedding 和任務模式不適用。逾時的嘗試會被中止、計為渠道失敗，並在允許時重試。",
+    "Enter an integer from 0 to 600 seconds": "請輸入 0 到 600 之間的整數秒數"
   }
 }

@@ -88,6 +88,7 @@ const defaultModelSettings: ModelSettings = {
   'monitor_setting.auto_test_channel_minutes': 10,
   'monitor_setting.channel_test_mode': 'scheduled_all',
   'monitor_setting.zero_token_as_failure': false,
+  'monitor_setting.first_token_timeout_seconds': 0,
   'monitor_setting.auto_disable_strategy': DEFAULT_AUTO_DISABLE_POLICY.strategy,
   'monitor_setting.auto_disable_window_minutes':
     DEFAULT_AUTO_DISABLE_POLICY.windowMinutes,

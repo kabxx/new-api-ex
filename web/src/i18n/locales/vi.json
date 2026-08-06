@@ -5319,6 +5319,9 @@
     "Disable when the recent failure rate reaches this percentage.": "Vô hiệu hóa khi tỷ lệ lỗi gần đây đạt phần trăm này.",
     "Enter a positive safe integer": "Nhập số nguyên dương an toàn",
     "Enter a finite percentage greater than 0 and at most 100": "Nhập phần trăm hữu hạn lớn hơn 0 và không quá 100",
-    "Minimum samples cannot exceed the recent sample size": "Số mẫu tối thiểu không được vượt quá cỡ mẫu gần đây"
+    "Minimum samples cannot exceed the recent sample size": "Số mẫu tối thiểu không được vượt quá cỡ mẫu gần đây",
+    "First output timeout (seconds)": "Thời gian chờ đầu ra đầu tiên (giây)",
+    "Timing starts when the upstream request is sent. 0 disables this text-generation check. Control events do not count; image, audio, embedding, and task modes are excluded. A timed-out attempt is cancelled, counted as a channel failure, and retried when allowed.": "Bộ đếm bắt đầu khi gửi yêu cầu lên thượng nguồn. 0 sẽ tắt kiểm tra tạo văn bản này. Sự kiện điều khiển không được tính; chế độ ảnh, âm thanh, embedding và tác vụ bị loại trừ. Lần thử quá thời gian sẽ bị hủy, tính là lỗi kênh và thử lại khi được phép.",
+    "Enter an integer from 0 to 600 seconds": "Nhập số giây nguyên từ 0 đến 600"
   }
 }

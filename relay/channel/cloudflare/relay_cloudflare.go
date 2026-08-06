@@ -35,8 +35,6 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	helper.SetEventStreamHeaders(c)
 	id := helper.GetResponseID(c)
 	var responseText string
-	isFirst := true
-
 	for scanner.Scan() {
 		data := scanner.Text()
 		if len(data) < len("data: ") {
@@ -55,15 +53,17 @@ func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 			logger.LogError(c, "error_unmarshalling_stream_response: "+err.Error())
 			continue
 		}
+		meaningfulOutput := false
 		for _, choice := range response.Choices {
 			choice.Delta.Role = "assistant"
-			responseText += choice.Delta.GetContentString()
+			content := choice.Delta.GetContentString()
+			responseText += content
+			meaningfulOutput = meaningfulOutput || content != ""
 		}
 		response.Id = id
 		response.Model = info.UpstreamModelName
 		err = helper.ObjectData(c, response)
-		if isFirst {
-			isFirst = false
+		if meaningfulOutput {
 			info.SetFirstResponseTime()
 		}
 		if err != nil {

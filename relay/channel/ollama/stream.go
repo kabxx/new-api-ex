@@ -128,11 +128,13 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		if !chunk.Done {
 			// delta content
 			var content string
+			meaningfulOutput := false
 			if chunk.Message != nil {
 				content = chunk.Message.Content
 			} else {
 				content = chunk.Response
 			}
+			meaningfulOutput = content != ""
 			delta := dto.ChatCompletionsStreamResponse{
 				Id:      responseId,
 				Object:  "chat.completion.chunk",
@@ -149,6 +151,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			if chunk.Message != nil && len(chunk.Message.Thinking) > 0 {
 				raw := strings.TrimSpace(string(chunk.Message.Thinking))
 				if raw != "" && raw != "null" {
+					meaningfulOutput = true
 					// Unmarshal the JSON string to get the actual content without quotes
 					var thinkingContent string
 					if err := common.Unmarshal(chunk.Message.Thinking, &thinkingContent); err == nil {
@@ -161,7 +164,11 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			}
 			// tool calls
 			if chunk.Message != nil && len(chunk.Message.ToolCalls) > 0 {
+				meaningfulOutput = true
 				delta.Choices[0].Delta.ToolCalls, toolCallIndex = ollamaToolCallsToOpenAI(chunk.Message.ToolCalls, toolCallIndex, true)
+			}
+			if meaningfulOutput {
+				info.SetFirstResponseTime()
 			}
 			if data, err := common.Marshal(delta); err == nil {
 				_ = helper.StringData(c, string(data))

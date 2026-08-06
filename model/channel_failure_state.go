@@ -23,6 +23,8 @@ const (
 	channelFailureRateStorageBytes = channelFailureRateCapacity / 8
 	channelFailureStateMaxRetries  = 12
 	channelFailureClaimLease       = 2 * time.Minute
+	channelFailureRetryBaseDelay   = 4 * time.Millisecond
+	channelFailureRetryMaxDelay    = 128 * time.Millisecond
 )
 
 // ChannelFailureState stores compact, bounded, key-hashed failure history so
@@ -67,6 +69,37 @@ type ChannelFailurePolicy struct {
 
 var channelFailureStateTableAvailability sync.Map
 
+var channelFailureStateSleep = time.Sleep
+
+func channelFailureRetryDelay(attempt int) time.Duration {
+	delay := channelFailureRetryBaseDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+		if delay >= channelFailureRetryMaxDelay {
+			return channelFailureRetryMaxDelay
+		}
+	}
+	return delay
+}
+
+func waitForChannelFailureRetry(attempt int) {
+	if attempt+1 < channelFailureStateMaxRetries {
+		channelFailureStateSleep(channelFailureRetryDelay(attempt))
+	}
+}
+
+func retrySQLiteBusyOperation(operation func() error) error {
+	var err error
+	for attempt := 0; attempt < channelFailureStateMaxRetries; attempt++ {
+		err = operation()
+		if err == nil || !isSQLiteChannelFailureBusy(err) {
+			return err
+		}
+		waitForChannelFailureRetry(attempt)
+	}
+	return fmt.Errorf("sqlite operation remained busy after %d attempts: %w", channelFailureStateMaxRetries, err)
+}
+
 func ChannelFailureKeyHash(usingKey string) string {
 	hash := sha256.Sum256([]byte(usingKey))
 	return hex.EncodeToString(hash[:])
@@ -84,6 +117,43 @@ func PersistentChannelFailureStateAvailable() bool {
 		channelFailureStateTableAvailability.Store(DB, true)
 	}
 	return available
+}
+
+// normalizeLegacyChannelFailureStates makes rows written before the compact
+// state format safe for revision CAS. The legacy observations and format
+// marker are deliberately preserved so the first outcome can still migrate
+// their history instead of silently discarding it.
+func normalizeLegacyChannelFailureStates() error {
+	if DB == nil || !DB.Migrator().HasTable(&ChannelFailureState{}) {
+		return nil
+	}
+	return retrySQLiteBusyOperation(func() error {
+		defaults := []struct {
+			column string
+			value  any
+		}{
+			{column: "revision", value: int64(0)},
+			{column: "format_version", value: 0},
+			{column: "threshold_reached", value: false},
+			{column: "claimed", value: false},
+			{column: "claimed_at_unix", value: int64(0)},
+			{column: "policy_signature", value: ""},
+			{column: "rate_count", value: 0},
+			{column: "rate_cursor", value: 0},
+			{column: "updated_at_unix", value: int64(0)},
+			{column: "window_failures", value: ""},
+			{column: "rate_samples", value: ""},
+			{column: "claim_token", value: ""},
+		}
+		for _, item := range defaults {
+			if err := DB.Model(&ChannelFailureState{}).
+				Where(item.column+" IS NULL").
+				Update(item.column, item.value).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func deleteChannelFailureStatesTx(tx *gorm.DB, channelID int) error {
@@ -246,7 +316,7 @@ func ensureChannelFailureState(channelID int, keyHash string) error {
 		if !isSQLiteChannelFailureBusy(err) {
 			return err
 		}
-		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+		waitForChannelFailureRetry(attempt)
 	}
 	return fmt.Errorf("channel failure state creation remained busy after %d attempts", channelFailureStateMaxRetries)
 }
@@ -267,7 +337,7 @@ func updateChannelFailureState(channelID int, keyHash string, now time.Time, mut
 		var state ChannelFailureState
 		if err := DB.Where("channel_id = ? AND key_hash = ?", channelID, keyHash).First(&state).Error; err != nil {
 			if isSQLiteChannelFailureBusy(err) {
-				time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+				waitForChannelFailureRetry(attempt)
 				continue
 			}
 			return "", err
@@ -287,8 +357,13 @@ func updateChannelFailureState(channelID int, keyHash string, now time.Time, mut
 		state.UpdatedAtUnix = now.Unix()
 		previousRevision := state.Revision
 		state.Revision++
+		revisionCondition := "revision = ?"
+		if previousRevision == 0 {
+			revisionCondition = "(revision = ? OR revision IS NULL)"
+		}
 		result := DB.Model(&ChannelFailureState{}).
-			Where("channel_id = ? AND key_hash = ? AND revision = ?", channelID, keyHash, previousRevision).
+			Where("channel_id = ? AND key_hash = ?", channelID, keyHash).
+			Where(revisionCondition, previousRevision).
 			Updates(map[string]any{
 				"consecutive":       state.Consecutive,
 				"window_failures":   state.WindowFailures,
@@ -307,7 +382,7 @@ func updateChannelFailureState(channelID int, keyHash string, now time.Time, mut
 			})
 		if result.Error != nil {
 			if isSQLiteChannelFailureBusy(result.Error) {
-				time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+				waitForChannelFailureRetry(attempt)
 				continue
 			}
 			return "", result.Error
@@ -315,6 +390,7 @@ func updateChannelFailureState(channelID int, keyHash string, now time.Time, mut
 		if result.RowsAffected == 1 {
 			return claimToken, nil
 		}
+		waitForChannelFailureRetry(attempt)
 	}
 	return "", fmt.Errorf("channel failure state update conflicted after %d attempts", channelFailureStateMaxRetries)
 }
@@ -418,10 +494,12 @@ func CompletePersistentChannelAutoDisable(channelID int, keyHash string, claimTo
 		return errors.New("channel failure claim token is required")
 	}
 	if succeeded {
-		return DB.Where(
-			"channel_id = ? AND key_hash = ? AND threshold_reached = ? AND claimed = ? AND claim_token = ?",
-			channelID, keyHash, true, true, claimToken,
-		).Delete(&ChannelFailureState{}).Error
+		return retrySQLiteBusyOperation(func() error {
+			return DB.Where(
+				"channel_id = ? AND key_hash = ? AND threshold_reached = ? AND claimed = ? AND claim_token = ?",
+				channelID, keyHash, true, true, claimToken,
+			).Delete(&ChannelFailureState{}).Error
+		})
 	}
 	for attempt := 0; attempt < channelFailureStateMaxRetries; attempt++ {
 		var state ChannelFailureState
@@ -431,7 +509,7 @@ func CompletePersistentChannelAutoDisable(channelID int, keyHash string, claimTo
 		}
 		if err != nil {
 			if isSQLiteChannelFailureBusy(err) {
-				time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+				waitForChannelFailureRetry(attempt)
 				continue
 			}
 			return err
@@ -439,8 +517,14 @@ func CompletePersistentChannelAutoDisable(channelID int, keyHash string, claimTo
 		if !state.ThresholdReached || !state.Claimed || state.ClaimToken != claimToken {
 			return nil
 		}
+		revisionCondition := "revision = ?"
+		if state.Revision == 0 {
+			revisionCondition = "(revision = ? OR revision IS NULL)"
+		}
 		result := DB.Model(&ChannelFailureState{}).
-			Where("channel_id = ? AND key_hash = ? AND revision = ? AND threshold_reached = ? AND claimed = ? AND claim_token = ?", channelID, keyHash, state.Revision, true, true, claimToken).
+			Where("channel_id = ? AND key_hash = ?", channelID, keyHash).
+			Where(revisionCondition, state.Revision).
+			Where("threshold_reached = ? AND claimed = ? AND claim_token = ?", true, true, claimToken).
 			Updates(map[string]any{
 				"claimed":         false,
 				"claim_token":     "",
@@ -450,7 +534,7 @@ func CompletePersistentChannelAutoDisable(channelID int, keyHash string, claimTo
 			})
 		if result.Error != nil {
 			if isSQLiteChannelFailureBusy(result.Error) {
-				time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+				waitForChannelFailureRetry(attempt)
 				continue
 			}
 			return result.Error
@@ -458,6 +542,7 @@ func CompletePersistentChannelAutoDisable(channelID int, keyHash string, claimTo
 		if result.RowsAffected == 1 {
 			return nil
 		}
+		waitForChannelFailureRetry(attempt)
 	}
 	return fmt.Errorf("channel failure claim release conflicted after %d attempts", channelFailureStateMaxRetries)
 }
@@ -482,14 +567,18 @@ func validPersistentChannelFailureClaimTx(tx *gorm.DB, channelID int, keyHash st
 }
 
 func ResetPersistentChannelFailureState(channelID int, keyHash string) error {
-	return DB.Where("channel_id = ? AND key_hash = ?", channelID, keyHash).Delete(&ChannelFailureState{}).Error
+	return retrySQLiteBusyOperation(func() error {
+		return DB.Where("channel_id = ? AND key_hash = ?", channelID, keyHash).Delete(&ChannelFailureState{}).Error
+	})
 }
 
 func ResetPersistentChannelFailureStatesForChannel(channelID int) error {
 	if DB == nil {
 		return errors.New("main database is unavailable")
 	}
-	return DB.Where("channel_id = ?", channelID).Delete(&ChannelFailureState{}).Error
+	return retrySQLiteBusyOperation(func() error {
+		return DB.Where("channel_id = ?", channelID).Delete(&ChannelFailureState{}).Error
+	})
 }
 
 func LoadPersistentChannelFailureState(channelID int, keyHash string) (*ChannelFailureState, error) {

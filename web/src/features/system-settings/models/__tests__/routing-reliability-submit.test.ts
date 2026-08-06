@@ -68,7 +68,7 @@ describe('routing reliability bulk submission', () => {
     assert.deepEqual(buildChangedOptionPayload(current, baseline), {
       RetryTimes: '20',
     })
-    assert.equal(ROUTING_RELIABILITY_OPTION_KEYS.length, 31)
+    assert.equal(ROUTING_RELIABILITY_OPTION_KEYS.length, 32)
     for (const key of [
       'retry_setting.same_priority_strategy',
       'monitor_setting.auto_disable_strategy',
@@ -77,6 +77,7 @@ describe('routing reliability bulk submission', () => {
       'monitor_setting.auto_disable_rate_sample_size',
       'monitor_setting.auto_disable_rate_min_samples',
       'monitor_setting.auto_disable_rate_threshold_percent',
+      'monitor_setting.first_token_timeout_seconds',
     ] as const) {
       assert.equal(ROUTING_RELIABILITY_OPTION_KEYS.includes(key), true)
     }

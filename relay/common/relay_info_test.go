@@ -31,6 +31,17 @@ func TestRelayInfoTracksFirstResponsePerAttemptWithoutOverwritingRequestFirst(t 
 	require.NotZero(t, info.AttemptFirstResponseTime())
 }
 
+func TestRelayInfoIgnoresOutputThatArrivesAfterAttemptTimeout(t *testing.T) {
+	info := &RelayInfo{}
+	info.BeginAttempt()
+
+	require.True(t, info.MarkAttemptFirstResponseTimeout())
+	info.SetFirstResponseTime()
+
+	assert.True(t, info.AttemptFirstResponseTimedOut())
+	assert.True(t, info.AttemptFirstResponseTime().IsZero())
+}
+
 func TestRelayInfoGetFinalRequestRelayFormatPrefersExplicitFinal(t *testing.T) {
 	info := &RelayInfo{
 		RelayFormat:             types.RelayFormatOpenAI,

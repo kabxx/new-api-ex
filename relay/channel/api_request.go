@@ -310,7 +310,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -340,7 +340,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
 	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -396,7 +396,7 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	return targetConn, nil
 }
 
-func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (context.CancelFunc, <-chan struct{}) {
+func startPingKeepAlive(c *gin.Context, info *common.RelayInfo, pingInterval time.Duration) (context.CancelFunc, <-chan struct{}) {
 	pingerCtx, stopPinger := context.WithCancel(context.Background())
 	done := make(chan struct{})
 
@@ -428,11 +428,19 @@ func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (context.Can
 		maxPingDuration := 120 * time.Minute // 最大ping持续时间
 		pingTimeout := time.NewTimer(maxPingDuration)
 		defer pingTimeout.Stop()
+		firstOutput := info.AttemptFirstResponseSignal()
+		outputReady := false
 
 		for {
 			select {
+			case <-firstOutput:
+				outputReady = true
+				firstOutput = nil
 			// 发送 ping 数据
 			case <-ticker.C:
+				if !outputReady {
+					continue
+				}
 				if err := sendPingData(c, &pingMutex); err != nil {
 					logger.LogDebug(c, "SSE ping error, stopping goroutine: %s", err.Error())
 					return
@@ -498,7 +506,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		generalSettings := operation_setting.GetGeneralSetting()
 		if generalSettings.PingIntervalEnabled && !info.DisablePing {
 			pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
-			stopPinger, pingerDone = startPingKeepAlive(c, pingInterval)
+			stopPinger, pingerDone = startPingKeepAlive(c, info, pingInterval)
 			// 使用defer确保在任何情况下都能停止ping goroutine
 			defer func() {
 				if stopPinger != nil {
@@ -510,6 +518,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	info.MarkAttemptUpstreamStarted()
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())
@@ -544,7 +553,7 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}

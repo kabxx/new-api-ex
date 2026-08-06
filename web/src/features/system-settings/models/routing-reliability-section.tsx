@@ -95,8 +95,10 @@ import {
 } from './retry-setting-validation'
 import {
   createAutoDisableStrategySchema,
+  createFirstOutputTimeoutSchema,
   DEFAULT_AUTO_DISABLE_POLICY,
   MAX_AUTO_DISABLE_OBSERVATIONS,
+  MAX_FIRST_OUTPUT_TIMEOUT_SECONDS,
   normalizeAutoDisableStrategy,
   type AutoDisableStrategy,
 } from './routing-reliability-strategy'
@@ -156,6 +158,9 @@ const createRoutingReliabilitySchema = (
               .min(1, 'Interval must be at least 1 minute'),
             channel_test_mode: z.enum(channelTestModes),
             zero_token_as_failure: z.boolean(),
+            first_token_timeout_seconds: createFirstOutputTimeoutSchema(
+              translateValidationMessage
+            ),
             channel_availability_notify_enabled: z.boolean(),
             channel_availability_notify_recipients: recipientInputSchema,
           })
@@ -236,6 +241,7 @@ type RoutingReliabilitySectionProps = {
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
     'monitor_setting.zero_token_as_failure': boolean
+    'monitor_setting.first_token_timeout_seconds': number
     'monitor_setting.auto_disable_strategy': AutoDisableStrategy
     'monitor_setting.auto_disable_window_minutes': number
     'monitor_setting.auto_disable_window_failures': number
@@ -275,6 +281,7 @@ type NormalizedRoutingReliabilityValues = {
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
   'monitor_setting.zero_token_as_failure': boolean
+  'monitor_setting.first_token_timeout_seconds': number
   'monitor_setting.auto_disable_strategy': AutoDisableStrategy
   'monitor_setting.auto_disable_window_minutes': number
   'monitor_setting.auto_disable_window_failures': number
@@ -354,6 +361,8 @@ const buildFormDefaults = (
     ),
     zero_token_as_failure:
       defaults['monitor_setting.zero_token_as_failure'] ?? false,
+    first_token_timeout_seconds:
+      defaults['monitor_setting.first_token_timeout_seconds'] ?? 0,
     auto_disable_strategy: normalizeAutoDisableStrategy(
       defaults['monitor_setting.auto_disable_strategy']
     ),
@@ -432,6 +441,8 @@ const normalizeDefaults = (
   ),
   'monitor_setting.zero_token_as_failure':
     defaults['monitor_setting.zero_token_as_failure'] ?? false,
+  'monitor_setting.first_token_timeout_seconds':
+    defaults['monitor_setting.first_token_timeout_seconds'] ?? 0,
   'monitor_setting.auto_disable_strategy': normalizeAutoDisableStrategy(
     defaults['monitor_setting.auto_disable_strategy']
   ),
@@ -507,6 +518,8 @@ const normalizeFormValues = (
       values.monitor_setting.channel_test_mode,
     'monitor_setting.zero_token_as_failure':
       values.monitor_setting.zero_token_as_failure,
+    'monitor_setting.first_token_timeout_seconds':
+      values.monitor_setting.first_token_timeout_seconds,
     'monitor_setting.auto_disable_strategy':
       values.monitor_setting.auto_disable_strategy,
     'monitor_setting.auto_disable_window_minutes':
@@ -719,6 +732,31 @@ export function RoutingReliabilitySection({
                     </FormControl>
                     <FormDescription>
                       {t('0 means no time limit')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='monitor_setting.first_token_timeout_seconds'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('First output timeout (seconds)')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min='0'
+                        max={MAX_FIRST_OUTPUT_TIMEOUT_SECONDS}
+                        step='1'
+                        {...safeNumberFieldProps(field)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Timing starts when the upstream request is sent. 0 disables this text-generation check. Control events do not count; image, audio, embedding, and task modes are excluded. A timed-out attempt is cancelled, counted as a channel failure, and retried when allowed.'
+                      )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>

@@ -5319,6 +5319,9 @@
     "Disable when the recent failure rate reaches this percentage.": "Désactivez lorsque le taux d’échec récent atteint ce pourcentage.",
     "Enter a positive safe integer": "Saisissez un entier positif sûr",
     "Enter a finite percentage greater than 0 and at most 100": "Saisissez un pourcentage fini supérieur à 0 et inférieur ou égal à 100",
-    "Minimum samples cannot exceed the recent sample size": "Le minimum d’échantillons ne peut pas dépasser la taille de l’échantillon récent"
+    "Minimum samples cannot exceed the recent sample size": "Le minimum d’échantillons ne peut pas dépasser la taille de l’échantillon récent",
+    "First output timeout (seconds)": "Délai du premier résultat (secondes)",
+    "Timing starts when the upstream request is sent. 0 disables this text-generation check. Control events do not count; image, audio, embedding, and task modes are excluded. A timed-out attempt is cancelled, counted as a channel failure, and retried when allowed.": "Le délai démarre à l’envoi de la requête en amont. 0 désactive ce contrôle de génération de texte. Les événements de contrôle ne comptent pas ; les modes image, audio, embedding et tâche sont exclus. Une tentative expirée est annulée, comptée comme échec du canal et relancée si possible.",
+    "Enter an integer from 0 to 600 seconds": "Saisissez un nombre entier de 0 à 600 secondes"
   }
 }

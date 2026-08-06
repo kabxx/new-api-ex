@@ -348,6 +348,7 @@ export function ModelMutateDrawer({
       'monitor_setting.auto_test_channel_minutes': 10,
       'monitor_setting.channel_test_mode': 'scheduled_all',
       'monitor_setting.zero_token_as_failure': false,
+      'monitor_setting.first_token_timeout_seconds': 0,
       'monitor_setting.auto_disable_strategy': 'consecutive',
       'monitor_setting.auto_disable_window_minutes': 10,
       'monitor_setting.auto_disable_window_failures': 5,

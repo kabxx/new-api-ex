@@ -203,6 +203,7 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 		"auto_test_channel_minutes":              "10",
 		"channel_test_mode":                      operation_setting.ChannelTestModeScheduledAll,
 		"zero_token_as_failure":                  "false",
+		"first_token_timeout_seconds":            "0",
 		"auto_disable_strategy":                  operation_setting.AutoDisableStrategyConsecutive,
 		"auto_disable_window_minutes":            "10",
 		"auto_disable_window_failures":           "5",
@@ -231,6 +232,7 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 			"auto_test_channel_minutes":              strconv.FormatFloat(previousMonitor.AutoTestChannelMinutes, 'f', -1, 64),
 			"channel_test_mode":                      previousMonitor.ChannelTestMode,
 			"zero_token_as_failure":                  strconv.FormatBool(previousMonitor.ZeroTokenAsFailure),
+			"first_token_timeout_seconds":            strconv.Itoa(previousMonitor.FirstTokenTimeoutSeconds),
 			"auto_disable_strategy":                  previousMonitor.AutoDisableStrategy,
 			"auto_disable_window_minutes":            strconv.Itoa(previousMonitor.AutoDisableWindowMinutes),
 			"auto_disable_window_failures":           strconv.Itoa(previousMonitor.AutoDisableWindowFailures),
@@ -261,6 +263,8 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 		{"RetryTimes": "17", "monitor_setting.auto_test_channel_minutes": "Inf"},
 		{"RetryTimes": "17", "monitor_setting.auto_disable_rate_sample_size": "5", "monitor_setting.auto_disable_rate_min_samples": "6"},
 		{"RetryTimes": "17", "monitor_setting.auto_disable_rate_threshold_percent": "NaN"},
+		{"RetryTimes": "17", "monitor_setting.first_token_timeout_seconds": "601"},
+		{"RetryTimes": "17", "monitor_setting.first_token_timeout_seconds": "1.5"},
 		{"RetryTimes": "17", "retry_setting.same_priority_strategy": "by_name"},
 	}
 	for _, values := range invalidCases {
@@ -299,6 +303,7 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 		"monitor_setting.auto_test_channel_minutes":              "5",
 		"monitor_setting.channel_test_mode":                      operation_setting.ChannelTestModePassiveRecovery,
 		"monitor_setting.zero_token_as_failure":                  "true",
+		"monitor_setting.first_token_timeout_seconds":            "12",
 		"monitor_setting.auto_disable_strategy":                  operation_setting.AutoDisableStrategyFailureRate,
 		"monitor_setting.auto_disable_window_minutes":            "12",
 		"monitor_setting.auto_disable_window_failures":           "7",
@@ -308,12 +313,12 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 		"monitor_setting.channel_availability_notify_enabled":    "true",
 		"monitor_setting.channel_availability_notify_recipients": `["Admin@Example.com","admin@example.com"]`,
 	}
-	require.Len(t, values, 31)
+	require.Len(t, values, 32)
 	require.NoError(t, UpdateRoutingReliabilityOptionsBulk(values))
 
 	var count int64
 	require.NoError(t, db.Model(&Option{}).Count(&count).Error)
-	assert.Equal(t, int64(31), count)
+	assert.Equal(t, int64(32), count)
 	assert.Equal(t, 17, common.RetryTimes)
 	assert.Equal(t, 0.75, common.ChannelDisableThreshold)
 	assert.True(t, common.AutomaticDisableChannelEnabled)
@@ -334,6 +339,7 @@ func TestRoutingReliabilityBulkValidatesBeforeCommitAndPublishesCompletePayload(
 	assert.Equal(t, float64(5), monitor.AutoTestChannelMinutes)
 	assert.Equal(t, operation_setting.ChannelTestModePassiveRecovery, monitor.ChannelTestMode)
 	assert.True(t, monitor.ZeroTokenAsFailure)
+	assert.Equal(t, 12, monitor.FirstTokenTimeoutSeconds)
 	assert.Equal(t, operation_setting.AutoDisableStrategyFailureRate, monitor.AutoDisableStrategy)
 	assert.Equal(t, 12, monitor.AutoDisableWindowMinutes)
 	assert.Equal(t, 7, monitor.AutoDisableWindowFailures)

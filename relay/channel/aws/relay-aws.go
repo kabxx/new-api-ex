@@ -40,11 +40,14 @@ func getAwsErrorStatusCode(err error) int {
 	return http.StatusInternalServerError
 }
 
-func newAwsInvokeContext() (context.Context, context.CancelFunc) {
-	if common.RelayTimeout <= 0 {
-		return context.Background(), func() {}
+func newAwsInvokeContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
 	}
-	return context.WithTimeout(context.Background(), time.Duration(common.RelayTimeout)*time.Second)
+	if common.RelayTimeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, time.Duration(common.RelayTimeout)*time.Second)
 }
 
 func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.Client, error) {
@@ -215,7 +218,8 @@ func getAwsModelID(requestModel string) string {
 
 func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
 
-	ctx, cancel := newAwsInvokeContext()
+	info.MarkAttemptUpstreamStarted()
+	ctx, cancel := newAwsInvokeContext(c.Request.Context())
 	defer cancel()
 
 	awsResp, err := a.AwsClient.InvokeModel(ctx, a.AwsReq.(*bedrockruntime.InvokeModelInput))
@@ -245,7 +249,8 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 }
 
 func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
-	ctx, cancel := newAwsInvokeContext()
+	info.MarkAttemptUpstreamStarted()
+	ctx, cancel := newAwsInvokeContext(c.Request.Context())
 	defer cancel()
 
 	awsResp, err := a.AwsClient.InvokeModelWithResponseStream(ctx, a.AwsReq.(*bedrockruntime.InvokeModelWithResponseStreamInput))
@@ -267,7 +272,9 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 	for event := range stream.Events() {
 		switch v := event.(type) {
 		case *bedrockruntimeTypes.ResponseStreamMemberChunk:
-			info.SetFirstResponseTime()
+			if helper.IsValidFirstOutputData(string(v.Value.Bytes)) {
+				info.SetFirstResponseTime()
+			}
 			respErr := claude.HandleStreamResponseData(c, info, claudeInfo, string(v.Value.Bytes))
 			if respErr != nil {
 				return respErr, nil
@@ -288,7 +295,8 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 // Nova模型处理函数
 func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
 
-	ctx, cancel := newAwsInvokeContext()
+	info.MarkAttemptUpstreamStarted()
+	ctx, cancel := newAwsInvokeContext(c.Request.Context())
 	defer cancel()
 
 	awsResp, err := a.AwsClient.InvokeModel(ctx, a.AwsReq.(*bedrockruntime.InvokeModelInput))

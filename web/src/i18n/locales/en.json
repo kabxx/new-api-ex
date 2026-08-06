@@ -5319,6 +5319,9 @@
     "Disable when the recent failure rate reaches this percentage.": "Disable when the recent failure rate reaches this percentage.",
     "Enter a positive safe integer": "Enter a positive safe integer",
     "Enter a finite percentage greater than 0 and at most 100": "Enter a finite percentage greater than 0 and at most 100",
-    "Minimum samples cannot exceed the recent sample size": "Minimum samples cannot exceed the recent sample size"
+    "Minimum samples cannot exceed the recent sample size": "Minimum samples cannot exceed the recent sample size",
+    "First output timeout (seconds)": "First output timeout (seconds)",
+    "Timing starts when the upstream request is sent. 0 disables this text-generation check. Control events do not count; image, audio, embedding, and task modes are excluded. A timed-out attempt is cancelled, counted as a channel failure, and retried when allowed.": "Timing starts when the upstream request is sent. 0 disables this text-generation check. Control events do not count; image, audio, embedding, and task modes are excluded. A timed-out attempt is cancelled, counted as a channel failure, and retried when allowed.",
+    "Enter an integer from 0 to 600 seconds": "Enter an integer from 0 to 600 seconds"
   }
 }

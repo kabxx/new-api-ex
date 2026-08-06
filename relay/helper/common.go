@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -43,13 +44,9 @@ func requestContextDone(c *gin.Context) bool {
 }
 
 func SetEventStreamHeaders(c *gin.Context) {
-	// 检查是否已经设置过头部
-	if _, exists := c.Get("event_stream_headers_set"); exists {
+	if strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
 		return
 	}
-
-	// 设置标志，表示头部已经设置过
-	c.Set("event_stream_headers_set", true)
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")

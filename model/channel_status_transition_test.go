@@ -1,7 +1,9 @@
 package model
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
@@ -14,6 +16,7 @@ func setupChannelStatusTransitionTest(t *testing.T, memoryCache bool) *gorm.DB {
 	t.Helper()
 	previousDB := DB
 	previousCache := common.MemoryCacheEnabled
+	previousDatabaseType := common.MainDatabaseType()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
@@ -21,12 +24,14 @@ func setupChannelStatusTransitionTest(t *testing.T, memoryCache bool) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1)
 	require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}, &ChannelFailureState{}, &ChannelSelectionMetricState{}))
 	DB = db
+	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	common.MemoryCacheEnabled = memoryCache
 	if memoryCache {
 		InitChannelCache()
 	}
 	t.Cleanup(func() {
 		DB = previousDB
+		common.SetMainDatabaseType(previousDatabaseType)
 		common.MemoryCacheEnabled = previousCache
 		_ = sqlDB.Close()
 	})
@@ -339,4 +344,197 @@ func TestClaimedAutomaticDisableRequiresCurrentFailureOwner(t *testing.T) {
 	stored, err := GetChannelById(channel.Id, true)
 	require.NoError(t, err)
 	assert.Equal(t, common.ChannelStatusAutoDisabled, stored.Status)
+}
+
+func TestAutomaticDisableRetriesSQLiteBusyTransaction(t *testing.T) {
+	db := setupChannelStatusTransitionTest(t, false)
+	previousSleep := channelFailureStateSleep
+	channelFailureStateSleep = func(time.Duration) {}
+	t.Cleanup(func() { channelFailureStateSleep = previousSleep })
+	channel := Channel{
+		Name:    "busy-retry",
+		Key:     "key",
+		Status:  common.ChannelStatusEnabled,
+		AutoBan: common.GetPointer(1),
+	}
+	require.NoError(t, db.Create(&channel).Error)
+	claimToken := "busy-owner"
+	require.NoError(t, db.Create(&ChannelFailureState{
+		ChannelID:        channel.Id,
+		KeyHash:          ChannelFailureKeyHash(channel.Key),
+		ThresholdReached: true,
+		Claimed:          true,
+		ClaimToken:       claimToken,
+		ClaimedAtUnix:    common.GetTimestamp(),
+	}).Error)
+
+	updateAttempts := 0
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register("test:auto-disable-busy-once", func(tx *gorm.DB) {
+		if tx.Statement.Table != "channels" {
+			return
+		}
+		updateAttempts++
+		if updateAttempts == 1 {
+			tx.AddError(errors.New("database is locked"))
+		}
+	}))
+
+	mutation, err := ApplyAutomaticChannelStatusWithClaim(channel.Id, channel.Key, common.ChannelStatusAutoDisabled, "upstream failure", claimToken)
+	require.NoError(t, err)
+	assert.True(t, mutation.ChannelChanged)
+	assert.Equal(t, 2, updateAttempts)
+	stored, err := GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, common.ChannelStatusAutoDisabled, stored.Status)
+}
+
+func TestAutomaticDisableBusyFailureRetainsClaimEvidenceForRetry(t *testing.T) {
+	db := setupChannelStatusTransitionTest(t, false)
+	previousSleep := channelFailureStateSleep
+	channelFailureStateSleep = func(time.Duration) {}
+	t.Cleanup(func() { channelFailureStateSleep = previousSleep })
+	channel := Channel{
+		Name:    "busy-failure",
+		Key:     "key",
+		Status:  common.ChannelStatusEnabled,
+		AutoBan: common.GetPointer(1),
+	}
+	require.NoError(t, db.Create(&channel).Error)
+	claimToken := "first-owner"
+	require.NoError(t, db.Create(&ChannelFailureState{
+		ChannelID:        channel.Id,
+		KeyHash:          ChannelFailureKeyHash(channel.Key),
+		Consecutive:      1,
+		ThresholdReached: true,
+		Claimed:          true,
+		ClaimToken:       claimToken,
+		ClaimedAtUnix:    common.GetTimestamp(),
+		PolicySignature:  "consecutive|1",
+	}).Error)
+
+	const callbackName = "test:auto-disable-always-busy"
+	require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "channels" {
+			tx.AddError(errors.New("database is locked"))
+		}
+	}))
+	_, err := ApplyAutomaticChannelStatusWithClaim(channel.Id, channel.Key, common.ChannelStatusAutoDisabled, "upstream failure", claimToken)
+	require.Error(t, err)
+	stored, err := GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, common.ChannelStatusEnabled, stored.Status)
+	state, err := LoadPersistentChannelFailureState(channel.Id, ChannelFailureKeyHash(channel.Key))
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.True(t, state.ThresholdReached)
+	assert.Equal(t, claimToken, state.ClaimToken)
+
+	db.Callback().Update().Remove(callbackName)
+	require.NoError(t, CompletePersistentChannelAutoDisable(channel.Id, ChannelFailureKeyHash(channel.Key), claimToken, false, time.Now()))
+	newClaim, err := RecordPersistentChannelOutcome(channel.Id, ChannelFailureKeyHash(channel.Key), time.Now(), true, ChannelFailurePolicy{
+		Strategy:             "consecutive",
+		ConsecutiveThreshold: 1,
+		PolicySignature:      "consecutive|1",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, newClaim)
+	assert.NotEqual(t, claimToken, newClaim)
+}
+
+func TestAutomaticDisableBusyRetryDoesNotPublishRolledBackMutation(t *testing.T) {
+	db := setupChannelStatusTransitionTest(t, true)
+	channel := Channel{
+		Name:    "busy-stale-mutation",
+		Key:     "key-one\nkey-two",
+		Status:  common.ChannelStatusEnabled,
+		AutoBan: common.GetPointer(1),
+		Group:   "default",
+		Models:  "test-model",
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 2,
+		},
+	}
+	require.NoError(t, db.Create(&channel).Error)
+	require.NoError(t, db.Create(&Ability{
+		Group:     channel.Group,
+		Model:     channel.Models,
+		ChannelId: channel.Id,
+		Enabled:   true,
+	}).Error)
+	claimToken := "original-owner"
+	require.NoError(t, db.Create(&ChannelFailureState{
+		ChannelID:        channel.Id,
+		KeyHash:          ChannelFailureKeyHash("key-one"),
+		Consecutive:      3,
+		ThresholdReached: true,
+		Claimed:          true,
+		ClaimToken:       claimToken,
+		ClaimedAtUnix:    common.GetTimestamp(),
+	}).Error)
+	InitChannelCache()
+
+	previousSleep := channelFailureStateSleep
+	transitionApplied := false
+	var transitionErr error
+	channelFailureStateSleep = func(time.Duration) {
+		if transitionApplied {
+			return
+		}
+		transitionApplied = true
+		transitionErr = db.Model(&ChannelFailureState{}).
+			Where("channel_id = ? AND key_hash = ?", channel.Id, ChannelFailureKeyHash("key-one")).
+			Updates(map[string]any{
+				"claim_token":     "replacement-owner",
+				"claimed_at_unix": common.GetTimestamp(),
+			}).Error
+		if transitionErr != nil {
+			return
+		}
+		transitionErr = db.Model(&Channel{}).Where("id = ?", channel.Id).
+			Update("status", common.ChannelStatusManuallyDisabled).Error
+		if transitionErr == nil {
+			InitChannelCache()
+		}
+	}
+	t.Cleanup(func() { channelFailureStateSleep = previousSleep })
+	transactionAttempts := 0
+	transaction := func(operation func(*gorm.DB) error) error {
+		transactionAttempts++
+		return db.Transaction(func(tx *gorm.DB) error {
+			err := operation(tx)
+			if err == nil && transactionAttempts == 1 {
+				return errors.New("database is locked")
+			}
+			return err
+		})
+	}
+
+	mutation, err := applyAutomaticChannelStatusWithTransaction(
+		channel.Id,
+		"key-one",
+		common.ChannelStatusAutoDisabled,
+		"upstream failure",
+		claimToken,
+		transaction,
+	)
+	require.NoError(t, transitionErr)
+	require.NoError(t, err)
+	assert.True(t, transitionApplied)
+	assert.Equal(t, 2, transactionAttempts)
+	assert.False(t, mutation.Changed())
+
+	stored, err := GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, common.ChannelStatusManuallyDisabled, stored.Status)
+	assert.Empty(t, stored.ChannelInfo.MultiKeyStatusList)
+	cached, err := CacheGetChannel(channel.Id)
+	require.NoError(t, err)
+	assert.Equal(t, common.ChannelStatusManuallyDisabled, cached.Status)
+	assert.Empty(t, cached.ChannelInfo.MultiKeyStatusList)
+	state, err := LoadPersistentChannelFailureState(channel.Id, ChannelFailureKeyHash("key-one"))
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.Equal(t, "replacement-owner", state.ClaimToken)
+	assert.True(t, state.ThresholdReached)
 }

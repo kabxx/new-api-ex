@@ -99,6 +99,84 @@ func TestStreamScannerHandler_EmptyBody(t *testing.T) {
 	assert.False(t, called.Load(), "handler should not be called for empty body")
 }
 
+func TestStreamScannerControlEventsDoNotRecordFirstOutput(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":null}}`,
+		`data: {"choices":[{"delta":{"role":"assistant","content":""}}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n")
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	info.BeginAttempt()
+
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	assert.True(t, info.AttemptFirstResponseTime().IsZero())
+}
+
+func TestStreamScannerRecordsFirstOutputAtValidToken(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"role":"assistant","content":""}}]}`,
+		`data: {"choices":[{"delta":{"content":"hello"}}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n")
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	info.BeginAttempt()
+
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	assert.False(t, info.AttemptFirstResponseTime().IsZero())
+}
+
+func TestIsValidFirstOutputDataRejectsMetadataAndEmptyToolStructures(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{name: "openai usage only", data: `{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0}}`, want: false},
+		{name: "claude usage only", data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`, want: false},
+		{name: "plain ping", data: `ping`, want: false},
+		{name: "plain heartbeat", data: `heartbeat`, want: false},
+		{name: "bare done", data: `[DONE]`, want: false},
+		{name: "empty tool calls", data: `{"choices":[{"delta":{"tool_calls":[]}}]}`, want: false},
+		{name: "empty function call", data: `{"choices":[{"delta":{"function_call":{}}}]}`, want: false},
+		{name: "reasoning", data: `{"choices":[{"delta":{"reasoning":"thinking"}}]}`, want: true},
+		{name: "reasoning content", data: `{"choices":[{"delta":{"reasoning_content":"thinking"}}]}`, want: true},
+		{name: "tool arguments", data: `{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{\\"city\\":\\"Paris\\"}"}}]}}]}`, want: true},
+		{name: "claude empty tool start", data: `{"type":"content_block_start","content_block":{"type":"tool_use","name":"","input":{}}}`, want: false},
+		{name: "claude tool start", data: `{"type":"content_block_start","content_block":{"type":"tool_use","name":"weather","input":{}}}`, want: true},
+		{name: "responses top-level delta", data: `{"type":"response.output_text.delta","delta":"hello"}`, want: true},
+		{name: "responses empty top-level delta", data: `{"type":"response.output_text.delta","delta":""}`, want: false},
+		{name: "baidu result", data: `{"result":"hello"}`, want: true},
+		{name: "baidu empty result", data: `{"result":""}`, want: false},
+		{name: "dify answer", data: `{"event":"message","answer":"hello"}`, want: true},
+		{name: "dify empty answer", data: `{"event":"message","answer":""}`, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, IsValidFirstOutputData(test.data))
+		})
+	}
+}
+
+func TestStreamScannerBareDoneDoesNotRecordOrForwardFirstOutput(t *testing.T) {
+	t.Parallel()
+
+	c, resp, info := setupStreamTest(t, strings.NewReader("[DONE]\n"))
+	info.BeginAttempt()
+
+	var received []string
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+
+	assert.True(t, info.AttemptFirstResponseTime().IsZero())
+	assert.Empty(t, received)
+}
+
 func TestStreamScannerHandlerWithOptionsStartsAtPreludeLimit(t *testing.T) {
 	t.Parallel()
 

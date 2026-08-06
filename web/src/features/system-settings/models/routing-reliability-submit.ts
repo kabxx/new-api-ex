@@ -45,6 +45,7 @@ export const ROUTING_RELIABILITY_OPTION_KEYS = [
   'monitor_setting.auto_test_channel_minutes',
   'monitor_setting.channel_test_mode',
   'monitor_setting.zero_token_as_failure',
+  'monitor_setting.first_token_timeout_seconds',
   'monitor_setting.auto_disable_strategy',
   'monitor_setting.auto_disable_window_minutes',
   'monitor_setting.auto_disable_window_failures',

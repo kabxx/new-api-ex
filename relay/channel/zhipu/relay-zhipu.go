@@ -189,6 +189,9 @@ func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case data := <-dataChan:
+			if data != "" && data != "\n" && data != "\r\n" {
+				info.SetFirstResponseTime()
+			}
 			response := streamResponseZhipu2OpenAI(data)
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {

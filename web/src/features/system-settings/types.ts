@@ -277,6 +277,7 @@ export type ModelSettings = {
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': 'scheduled_all' | 'passive_recovery'
   'monitor_setting.zero_token_as_failure': boolean
+  'monitor_setting.first_token_timeout_seconds': number
   'monitor_setting.auto_disable_strategy':
     | 'consecutive'
     | 'window'

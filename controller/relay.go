@@ -86,6 +86,228 @@ func channelSelectionFirstResponseMillis(info *relaycommon.RelayInfo, attemptSta
 	return 0
 }
 
+func firstTokenTimeoutTextModeApplies(info *relaycommon.RelayInfo, relayFormat types.RelayFormat) bool {
+	if info == nil {
+		return false
+	}
+	switch info.RelayMode {
+	case relayconstant.RelayModeChatCompletions,
+		relayconstant.RelayModeCompletions,
+		relayconstant.RelayModeGemini,
+		relayconstant.RelayModeResponses,
+		relayconstant.RelayModeResponsesCompact:
+		return true
+	}
+	if info.RelayMode != relayconstant.RelayModeUnknown {
+		return false
+	}
+	return relayFormat == types.RelayFormatClaude ||
+		relayFormat == types.RelayFormatGemini ||
+		relayFormat == types.RelayFormatOpenAIResponses
+}
+
+func firstTokenTimeoutApplies(info *relaycommon.RelayInfo, relayFormat types.RelayFormat) bool {
+	if !firstTokenTimeoutTextModeApplies(info, relayFormat) {
+		return false
+	}
+	// Xunfei's text adapter uses an upstream WebSocket and cannot be cancelled
+	// through the HTTP attempt context. Keep this HTTP-only feature out of it.
+	if info.GetChannelType() == constant.ChannelTypeXunfei {
+		return false
+	}
+	modelNames := strings.ToLower(info.OriginModelName + " " + info.GetUpstreamModelName())
+	if strings.Contains(modelNames, "audio") {
+		return false
+	}
+	channelType := info.GetChannelType()
+	if (channelType == constant.ChannelTypeGemini || channelType == constant.ChannelTypeVertexAi) &&
+		info.ConvOptions().Gemini.SupportsImagineModel(info.GetUpstreamModelName()) {
+		return false
+	}
+	// Native Gemini embedding endpoints share RelayModeGemini with text
+	// generation. Mirror geminiRelayHandler's routing check so embedding calls
+	// never inherit a first-output timeout.
+	if info.RelayMode == relayconstant.RelayModeGemini && strings.Contains(strings.ToLower(info.RequestURLPath), "embed") {
+		return false
+	}
+	if request, ok := info.Request.(*dto.GeneralOpenAIRequest); ok {
+		var modalities []string
+		if len(request.Modalities) > 0 && common.Unmarshal(request.Modalities, &modalities) == nil {
+			for _, modality := range modalities {
+				if strings.EqualFold(strings.TrimSpace(modality), "audio") {
+					return false
+				}
+			}
+		}
+		audioConfig := strings.TrimSpace(string(request.Audio))
+		if audioConfig != "" && audioConfig != "null" && audioConfig != "{}" {
+			return false
+		}
+	}
+	if request, ok := info.Request.(*dto.OpenAIResponsesRequest); ok {
+		for _, tool := range request.GetToolsMap() {
+			if strings.EqualFold(strings.TrimSpace(common.Interface2String(tool["type"])), dto.BuildInToolImageGeneration) {
+				return false
+			}
+		}
+	}
+	if request, ok := info.Request.(*dto.GeminiChatRequest); ok {
+		for _, modality := range request.GenerationConfig.ResponseModalities {
+			switch strings.ToLower(strings.TrimSpace(modality)) {
+			case "audio", "image":
+				return false
+			}
+		}
+		responseMIME := strings.ToLower(strings.TrimSpace(request.GenerationConfig.ResponseMimeType))
+		if strings.HasPrefix(responseMIME, "audio/") || strings.HasPrefix(responseMIME, "image/") {
+			return false
+		}
+		if len(request.GenerationConfig.SpeechConfig) > 0 || len(request.GenerationConfig.ImageConfig) > 0 {
+			return false
+		}
+		if strings.Contains(modelNames, "image") || strings.Contains(modelNames, "imagen") || strings.Contains(modelNames, "speech") || strings.Contains(modelNames, "tts") {
+			return false
+		}
+	}
+	return true
+}
+
+// firstTokenTimeoutAppliesToCurrentAttempt evaluates the selected channel from
+// the gin context instead of reusing RelayInfo.ChannelMeta from a previous
+// attempt. Handlers still initialize their own RelayInfo normally; this
+// snapshot only makes the timeout decision against the current channel and its
+// model mapping before the handler starts the upstream request.
+func firstTokenTimeoutAppliesToCurrentAttempt(c *gin.Context, info *relaycommon.RelayInfo, relayFormat types.RelayFormat) (bool, *types.NewAPIError) {
+	if c == nil || info == nil {
+		return false, nil
+	}
+	if !firstTokenTimeoutTextModeApplies(info, relayFormat) {
+		return false, nil
+	}
+	originModel := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
+	if originModel == "" {
+		originModel = info.OriginModelName
+	}
+	attemptInfo := &relaycommon.RelayInfo{
+		RelayMode:       info.RelayMode,
+		RequestURLPath:  info.RequestURLPath,
+		OriginModelName: originModel,
+	}
+	attemptInfo.InitChannelMeta(c)
+	if err := helper.ModelMappedHelper(c, attemptInfo, nil); err != nil {
+		return false, types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	}
+	attemptInfo.Request = info.Request
+	return firstTokenTimeoutApplies(attemptInfo, relayFormat), nil
+}
+
+func runRelayAttemptWithFirstTokenTimeout(c *gin.Context, info *relaycommon.RelayInfo, relayFormat types.RelayFormat, handler func() *types.NewAPIError) *types.NewAPIError {
+	if info == nil {
+		return handler()
+	}
+	seconds := operation_setting.GetMonitorSettingSnapshot().FirstTokenTimeoutSeconds
+	if seconds <= 0 {
+		return handler()
+	}
+	applies, applicabilityErr := firstTokenTimeoutAppliesToCurrentAttempt(c, info, relayFormat)
+	if applicabilityErr != nil {
+		return applicabilityErr
+	}
+	if !applies {
+		return handler()
+	}
+	upstreamStarted := info.AttemptUpstreamStartedSignal()
+	timeout := make(chan time.Time, 1)
+	timerDone := make(chan struct{})
+	go func() {
+		select {
+		case <-upstreamStarted:
+			timer := time.NewTimer(time.Duration(seconds) * time.Second)
+			defer timer.Stop()
+			select {
+			case timeout <- <-timer.C:
+			case <-timerDone:
+			}
+		case <-timerDone:
+		}
+	}()
+	defer close(timerDone)
+	return runRelayAttemptWithFirstTokenTimeoutSignal(c, info, seconds, timeout, handler)
+}
+
+func runRelayAttemptWithFirstTokenTimeoutSignal(c *gin.Context, info *relaycommon.RelayInfo, seconds int, timeout <-chan time.Time, handler func() *types.NewAPIError) *types.NewAPIError {
+	parentRequest := c.Request
+	parentContext := parentRequest.Context()
+	attemptContext, cancel := context.WithCancel(parentContext)
+	c.Request = parentRequest.WithContext(attemptContext)
+	originalWriter := c.Writer
+	var attemptWriter *firstTokenResponseBuffer
+	attemptWriter = newFirstTokenResponseBuffer(originalWriter, helper.DefaultMaxPendingStreamBytes, func() {
+		if info.MarkAttemptFirstResponseBufferLimit(helper.DefaultMaxPendingStreamBytes) {
+			attemptWriter.Discard()
+			cancel()
+		}
+	}, func(err error) {
+		if info.MarkAttemptDownstreamWriteError(err) {
+			cancel()
+		}
+	})
+	c.Writer = attemptWriter
+	info.ConfigureAttemptFirstResponseTimeout(seconds, parentContext, func() {
+		_ = attemptWriter.Release()
+	})
+	defer func() {
+		info.ClearAttemptFirstResponseTimeout()
+		c.Writer = originalWriter
+		cancel()
+		c.Request = parentRequest
+	}()
+
+	firstResponse := info.AttemptFirstResponseSignal()
+	monitorDone := make(chan struct{})
+	defer close(monitorDone)
+	go func() {
+		select {
+		case <-firstResponse:
+		case <-monitorDone:
+		case <-parentContext.Done():
+		case <-timeout:
+			if info.MarkAttemptFirstResponseTimeout() {
+				attemptWriter.Discard()
+				cancel()
+			}
+		}
+	}()
+
+	newAPIError := handler()
+	if newAPIError == nil && !info.IsStream {
+		// Non-streaming adapters only expose a valid response after their body
+		// has been parsed successfully. This is the first usable output point.
+		info.SetFirstResponseTime()
+	}
+	if firstResponseErr := info.AttemptFirstResponseError(); firstResponseErr != nil {
+		attemptWriter.Discard()
+		return firstResponseErr
+	}
+	if newAPIError == nil && info.AttemptFirstResponseTime().IsZero() {
+		if firstResponseErr := info.AttemptSettlementError(); firstResponseErr != nil {
+			attemptWriter.Discard()
+			return firstResponseErr
+		}
+	}
+	if newAPIError != nil {
+		attemptWriter.Discard()
+		return newAPIError
+	}
+	if err := attemptWriter.Release(); err != nil {
+		if downstreamErr := info.AttemptSettlementError(); downstreamErr != nil {
+			return downstreamErr
+		}
+		return types.NewErrorWithStatusCode(err, types.ErrorCodeDoRequestFailed, 499, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+	}
+	return nil
+}
+
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	requestId := c.GetString(common.RequestIdKey)
@@ -311,16 +533,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		attemptStartedAt := time.Now()
 		relayInfo.BeginAttempt()
 
-		switch relayFormat {
-		case types.RelayFormatOpenAIRealtime:
-			newAPIError = relay.WssHelper(c, relayInfo)
-		case types.RelayFormatClaude:
-			newAPIError = relay.ClaudeHelper(c, relayInfo)
-		case types.RelayFormatGemini:
-			newAPIError = geminiRelayHandler(c, relayInfo)
-		default:
-			newAPIError = relayHandler(c, relayInfo)
-		}
+		newAPIError = runRelayAttemptWithFirstTokenTimeout(c, relayInfo, relayFormat, func() *types.NewAPIError {
+			switch relayFormat {
+			case types.RelayFormatOpenAIRealtime:
+				return relay.WssHelper(c, relayInfo)
+			case types.RelayFormatClaude:
+				return relay.ClaudeHelper(c, relayInfo)
+			case types.RelayFormatGemini:
+				return geminiRelayHandler(c, relayInfo)
+			default:
+				return relayHandler(c, relayInfo)
+			}
+		})
 		zeroTokenFailure := newAPIError == nil && common.GetContextKeyBool(c, constant.ContextKeyZeroTokenFailure)
 		if retryParam.UsesAdaptiveSamePrioritySelection() && (newAPIError == nil || zeroTokenFailure || !types.IsSkipRetryError(newAPIError)) {
 			firstResponseMillis := channelSelectionFirstResponseMillis(relayInfo, attemptStartedAt)

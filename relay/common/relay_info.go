@@ -1,11 +1,14 @@
 package common
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -92,6 +95,16 @@ type RelayInfo struct {
 	FirstResponseTime        time.Time
 	isFirstResponse          bool
 	attemptFirstResponseTime time.Time
+	attemptResponseMu        sync.Mutex
+	attemptFirstResponseCh   chan struct{}
+	attemptResponseTimedOut  bool
+	attemptResponseFailure   string
+	attemptDownstreamError   error
+	attemptTimeoutSeconds    int
+	attemptParentContext     context.Context
+	attemptResponseReady     func()
+	attemptUpstreamStartedCh chan struct{}
+	attemptUpstreamStarted   bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -809,15 +822,32 @@ func (info *RelayInfo) ConvOptions() *convmeta.Options {
 	return options
 }
 
-func (info *RelayInfo) SetFirstResponseTime() {
-	if info.isFirstResponse {
-		now := time.Now()
-		info.attemptFirstResponseTime = now
-		if info.FirstResponseTime.IsZero() || !info.FirstResponseTime.After(info.StartTime) {
-			info.FirstResponseTime = now
-		}
-		info.isFirstResponse = false
+func (info *RelayInfo) SetFirstResponseTime() bool {
+	if info == nil {
+		return false
 	}
+	info.attemptResponseMu.Lock()
+	if !info.isFirstResponse || info.attemptResponseTimedOut {
+		info.attemptResponseMu.Unlock()
+		return false
+	}
+	now := time.Now()
+	info.attemptFirstResponseTime = now
+	if info.FirstResponseTime.IsZero() || !info.FirstResponseTime.After(info.StartTime) {
+		info.FirstResponseTime = now
+	}
+	info.isFirstResponse = false
+	if info.attemptFirstResponseCh != nil {
+		close(info.attemptFirstResponseCh)
+		info.attemptFirstResponseCh = nil
+	}
+	responseReady := info.attemptResponseReady
+	info.attemptResponseReady = nil
+	info.attemptResponseMu.Unlock()
+	if responseReady != nil {
+		responseReady()
+	}
+	return true
 }
 
 // BeginAttempt resets only the per-upstream-attempt response marker. The
@@ -827,7 +857,18 @@ func (info *RelayInfo) BeginAttempt() {
 	if info == nil {
 		return
 	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
 	info.attemptFirstResponseTime = time.Time{}
+	info.attemptFirstResponseCh = make(chan struct{})
+	info.attemptResponseTimedOut = false
+	info.attemptResponseFailure = ""
+	info.attemptDownstreamError = nil
+	info.attemptTimeoutSeconds = 0
+	info.attemptParentContext = nil
+	info.attemptResponseReady = nil
+	info.attemptUpstreamStartedCh = make(chan struct{})
+	info.attemptUpstreamStarted = false
 	info.isFirstResponse = true
 }
 
@@ -837,7 +878,224 @@ func (info *RelayInfo) AttemptFirstResponseTime() time.Time {
 	if info == nil {
 		return time.Time{}
 	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
 	return info.attemptFirstResponseTime
+}
+
+// AttemptFirstResponseSignal returns a channel closed by the first valid
+// output of the current upstream attempt.
+func (info *RelayInfo) AttemptFirstResponseSignal() <-chan struct{} {
+	if info == nil {
+		return nil
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	if info.attemptFirstResponseCh == nil {
+		ready := make(chan struct{})
+		close(ready)
+		return ready
+	}
+	return info.attemptFirstResponseCh
+}
+
+func (info *RelayInfo) MarkAttemptFirstResponseTimeout() bool {
+	if info == nil {
+		return false
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	if !info.attemptFirstResponseTime.IsZero() || info.attemptResponseTimedOut {
+		return false
+	}
+	info.attemptResponseTimedOut = true
+	if info.attemptTimeoutSeconds > 0 {
+		info.attemptResponseFailure = fmt.Sprintf("upstream did not produce a valid first output within %d seconds", info.attemptTimeoutSeconds)
+	} else {
+		info.attemptResponseFailure = "upstream did not produce a valid first output before the attempt timed out"
+	}
+	return true
+}
+
+// ConfigureAttemptFirstResponseTimeout enables first-output gating for the
+// current attempt. responseReady is called exactly once after a valid output
+// wins the race with timeout, allowing the controller to release buffered
+// downstream bytes without exposing a failed attempt.
+func (info *RelayInfo) ConfigureAttemptFirstResponseTimeout(seconds int, parent context.Context, responseReady func()) {
+	if info == nil {
+		return
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	info.attemptTimeoutSeconds = seconds
+	info.attemptParentContext = parent
+	info.attemptResponseReady = responseReady
+}
+
+func (info *RelayInfo) ClearAttemptFirstResponseTimeout() {
+	if info == nil {
+		return
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	info.attemptTimeoutSeconds = 0
+	info.attemptParentContext = nil
+	info.attemptResponseReady = nil
+}
+
+func (info *RelayInfo) AttemptFirstResponseTimeoutEnabled() bool {
+	if info == nil {
+		return false
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	return info.attemptTimeoutSeconds > 0
+}
+
+// MarkAttemptFirstResponseBufferLimit records a bounded-prelude failure. It
+// uses the same channel error family as a first-output timeout so the failed
+// attempt remains retryable and participates in channel failure accounting.
+func (info *RelayInfo) MarkAttemptFirstResponseBufferLimit(limit int) bool {
+	if info == nil {
+		return false
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	if !info.attemptFirstResponseTime.IsZero() || info.attemptResponseTimedOut {
+		return false
+	}
+	info.attemptResponseTimedOut = true
+	info.attemptResponseFailure = fmt.Sprintf("upstream sent more than %d bytes before a valid first output", limit)
+	return true
+}
+
+// MarkAttemptDownstreamWriteError records a client-side write failure for the
+// current attempt. It is deliberately separate from channel failures: the
+// upstream produced valid output, but the downstream could no longer receive
+// it, so the attempt must not settle or retry against another channel.
+func (info *RelayInfo) MarkAttemptDownstreamWriteError(err error) bool {
+	if info == nil || err == nil {
+		return false
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	if info.attemptDownstreamError != nil {
+		return false
+	}
+	info.attemptDownstreamError = err
+	return true
+}
+
+// AttemptSettlementError prevents every billing path from settling an attempt
+// that timed out, completed without a valid first output, or could not deliver
+// its buffered response to the downstream client.
+func (info *RelayInfo) AttemptSettlementError() *types.NewAPIError {
+	if info == nil {
+		return nil
+	}
+	info.attemptResponseMu.Lock()
+	if err := info.attemptDownstreamErrorLocked(); err != nil {
+		info.attemptResponseMu.Unlock()
+		return err
+	}
+	if info.attemptTimeoutSeconds > 0 && info.attemptFirstResponseTime.IsZero() && !info.attemptResponseTimedOut {
+		info.attemptResponseTimedOut = true
+		info.attemptResponseFailure = "upstream response ended before producing a valid first output"
+	}
+	err := info.attemptFirstResponseErrorLocked()
+	info.attemptResponseMu.Unlock()
+	return err
+}
+
+// AttemptFirstResponseError returns an already-recorded first-output failure
+// without changing a normal upstream error into a timeout.
+func (info *RelayInfo) AttemptFirstResponseError() *types.NewAPIError {
+	if info == nil {
+		return nil
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	if err := info.attemptDownstreamErrorLocked(); err != nil {
+		return err
+	}
+	return info.attemptFirstResponseErrorLocked()
+}
+
+func (info *RelayInfo) attemptDownstreamErrorLocked() *types.NewAPIError {
+	if info.attemptDownstreamError == nil {
+		return nil
+	}
+	return types.NewErrorWithStatusCode(
+		fmt.Errorf("downstream write failed before attempt settlement: %w", info.attemptDownstreamError),
+		types.ErrorCodeDoRequestFailed,
+		499,
+		types.ErrOptionWithSkipRetry(),
+		types.ErrOptionWithNoRecordErrorLog(),
+	)
+}
+
+func (info *RelayInfo) attemptFirstResponseErrorLocked() *types.NewAPIError {
+	if !info.attemptResponseTimedOut {
+		return nil
+	}
+	if info.attemptParentContext != nil && info.attemptParentContext.Err() != nil {
+		return types.NewErrorWithStatusCode(
+			fmt.Errorf("client cancelled before the first valid upstream output: %w", info.attemptParentContext.Err()),
+			types.ErrorCodeDoRequestFailed,
+			499,
+			types.ErrOptionWithSkipRetry(),
+			types.ErrOptionWithNoRecordErrorLog(),
+		)
+	}
+	message := info.attemptResponseFailure
+	if message == "" {
+		message = "upstream did not produce a valid first output"
+	}
+	return types.NewOpenAIError(errors.New(message), types.ErrorCodeChannelResponseTimeExceeded, http.StatusGatewayTimeout)
+}
+
+func (info *RelayInfo) AttemptFirstResponseTimedOut() bool {
+	if info == nil {
+		return false
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	return info.attemptResponseTimedOut
+}
+
+// MarkAttemptUpstreamStarted starts the first-output timer at the point where
+// the upstream request is handed to the HTTP client. It is idempotent because
+// a few adapters perform more than one internal request for one attempt.
+func (info *RelayInfo) MarkAttemptUpstreamStarted() {
+	if info == nil {
+		return
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	if info.attemptUpstreamStarted {
+		return
+	}
+	info.attemptUpstreamStarted = true
+	if info.attemptUpstreamStartedCh != nil {
+		close(info.attemptUpstreamStartedCh)
+		info.attemptUpstreamStartedCh = nil
+	}
+}
+
+// AttemptUpstreamStartedSignal is closed immediately before the current
+// attempt is sent to the upstream HTTP client.
+func (info *RelayInfo) AttemptUpstreamStartedSignal() <-chan struct{} {
+	if info == nil {
+		return nil
+	}
+	info.attemptResponseMu.Lock()
+	defer info.attemptResponseMu.Unlock()
+	if info.attemptUpstreamStartedCh == nil {
+		ready := make(chan struct{})
+		close(ready)
+		return ready
+	}
+	return info.attemptUpstreamStartedCh
 }
 
 func (info *RelayInfo) HasSendResponse() bool {

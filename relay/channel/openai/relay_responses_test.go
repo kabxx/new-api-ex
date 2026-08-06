@@ -102,6 +102,7 @@ func TestResponsesStreamMeaningfulOutput(t *testing.T) {
 		{name: "created metadata", data: `{"type":"response.created","response":{"id":"resp_1"}}`, want: false},
 		{name: "in progress metadata", data: `{"type":"response.in_progress"}`, want: false},
 		{name: "output item scaffold", data: `{"type":"response.output_item.added","item":{"type":"message"}}`, want: false},
+		{name: "empty tool item scaffold", data: `{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1"}}`, want: false},
 		{name: "empty text delta", data: `{"type":"response.output_text.delta","delta":""}`, want: false},
 		{name: "whitespace text delta", data: `{"type":"response.output_text.delta","delta":" "}`, want: true},
 		{name: "function arguments delta", data: `{"type":"response.function_call_arguments.delta","delta":"{}"}`, want: true},

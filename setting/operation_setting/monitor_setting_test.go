@@ -9,6 +9,16 @@ import (
 
 func TestMonitorSettingZeroTokenAsFailureDefaultsFalse(t *testing.T) {
 	assert.False(t, monitorSetting.ZeroTokenAsFailure)
+	assert.Zero(t, monitorSetting.FirstTokenTimeoutSeconds)
+}
+
+func TestValidateMonitorOptionFirstTokenTimeoutBounds(t *testing.T) {
+	for _, value := range []string{"0", "1", "600"} {
+		require.NoError(t, ValidateMonitorOption("monitor_setting.first_token_timeout_seconds", value))
+	}
+	for _, value := range []string{"-1", "601", "1.5", "NaN", ""} {
+		require.Error(t, ValidateMonitorOption("monitor_setting.first_token_timeout_seconds", value))
+	}
 }
 
 func TestGetMonitorSetting_ChannelTestEnabledEnvOverridesEnabledConfig(t *testing.T) {

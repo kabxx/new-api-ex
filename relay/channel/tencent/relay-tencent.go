@@ -113,7 +113,11 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 
 		response := streamResponseTencent2OpenAI(&tencentResponse)
 		if len(response.Choices) != 0 {
-			responseText += response.Choices[0].Delta.GetContentString()
+			content := response.Choices[0].Delta.GetContentString()
+			responseText += content
+			if content != "" {
+				info.SetFirstResponseTime()
+			}
 		}
 
 		err = helper.ObjectData(c, response)

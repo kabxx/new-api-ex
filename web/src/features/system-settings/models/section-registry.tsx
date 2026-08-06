@@ -110,6 +110,8 @@ const MODELS_SECTIONS = [
             settings['monitor_setting.channel_test_mode'],
           'monitor_setting.zero_token_as_failure':
             settings['monitor_setting.zero_token_as_failure'],
+          'monitor_setting.first_token_timeout_seconds':
+            settings['monitor_setting.first_token_timeout_seconds'],
           'monitor_setting.auto_disable_strategy':
             settings['monitor_setting.auto_disable_strategy'],
           'monitor_setting.auto_disable_window_minutes':

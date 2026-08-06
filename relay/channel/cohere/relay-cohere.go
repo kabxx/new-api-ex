@@ -110,20 +110,18 @@ func cohereStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		stopChan <- true
 	}()
 	helper.SetEventStreamHeaders(c)
-	isFirst := true
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case data := <-dataChan:
-			if isFirst {
-				isFirst = false
-				info.SetFirstResponseTime()
-			}
 			data = strings.TrimSuffix(data, "\r")
 			var cohereResp CohereResponse
 			err := json.Unmarshal([]byte(data), &cohereResp)
 			if err != nil {
 				common.SysLog("error unmarshalling stream response: " + err.Error())
 				return true
+			}
+			if !cohereResp.IsFinished && cohereResp.Text != "" {
+				info.SetFirstResponseTime()
 			}
 			var openaiResp dto.ChatCompletionsStreamResponse
 			openaiResp.Id = responseId

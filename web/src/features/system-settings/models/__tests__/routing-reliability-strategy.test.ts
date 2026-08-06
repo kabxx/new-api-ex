@@ -22,10 +22,21 @@ import { describe, test } from 'node:test'
 import {
   autoDisableStrategies,
   createAutoDisableStrategySchema,
+  createFirstOutputTimeoutSchema,
   DEFAULT_AUTO_DISABLE_POLICY,
   MAX_AUTO_DISABLE_OBSERVATIONS,
   normalizeAutoDisableStrategy,
 } from '../routing-reliability-strategy.ts'
+
+test('first output timeout accepts disabled and bounded seconds', () => {
+  const schema = createFirstOutputTimeoutSchema((key) => key)
+  for (const value of [0, 1, 600, '12']) {
+    assert.equal(schema.safeParse(value).success, true)
+  }
+  for (const value of [-1, 601, 1.5, 'NaN']) {
+    assert.equal(schema.safeParse(value).success, false)
+  }
+})
 
 const translate = (key: string) => `translated:${key}`
 

@@ -50,7 +50,7 @@ func streamResponsePaLM2OpenAI(palmResponse *PaLMChatResponse) *dto.ChatCompleti
 	return &response
 }
 
-func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError, string) {
+func palmStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, string) {
 	responseText := ""
 	responseId := helper.GetResponseID(c)
 	createdTime := common.GetTimestamp()
@@ -76,6 +76,9 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 		fullTextResponse.Created = createdTime
 		if len(palmResponse.Candidates) > 0 {
 			responseText = palmResponse.Candidates[0].Content
+			if responseText != "" {
+				info.SetFirstResponseTime()
+			}
 		}
 		jsonResponse, err := json.Marshal(fullTextResponse)
 		if err != nil {

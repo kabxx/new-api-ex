@@ -403,7 +403,7 @@ func responsesOutputItemHasMeaningfulOutput(item *responsesStreamGateItem) bool 
 	if item == nil {
 		return false
 	}
-	if item.Name != "" || item.CallID != "" || item.Arguments != "" || item.EncryptedContent != "" {
+	if item.Name != "" || item.Arguments != "" || item.EncryptedContent != "" {
 		return true
 	}
 	for _, content := range item.Content {
@@ -416,10 +416,5 @@ func responsesOutputItemHasMeaningfulOutput(item *responsesStreamGateItem) bool 
 			return true
 		}
 	}
-	switch item.Type {
-	case "", "message", "reasoning":
-		return false
-	default:
-		return true
-	}
+	return false
 }

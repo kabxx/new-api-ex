@@ -80,16 +80,20 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		if newApiErr != nil {
 			return newApiErr
 		}
+		if !info.IsStream {
+			info.SetFirstResponseTime()
+		}
 
 		var containAudioTokens = usage.CompletionTokenDetails.AudioTokens > 0 || usage.PromptTokensDetails.AudioTokens > 0
 		var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 
-		if containAudioTokens && containsAudioRatios {
-			service.PostAudioConsumeQuota(c, info, usage, "")
-		} else {
-			service.PostTextConsumeQuota(c, info, usage, nil)
-		}
-		return nil
+		return settleCompletedAttempt(info, func() {
+			if containAudioTokens && containsAudioRatios {
+				service.PostAudioConsumeQuota(c, info, usage, "")
+			} else {
+				service.PostTextConsumeQuota(c, info, usage, nil)
+			}
+		})
 	}
 
 	var requestBody io.Reader
@@ -210,14 +214,18 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
 	}
+	if !info.IsStream {
+		info.SetFirstResponseTime()
+	}
 
 	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 
-	if containAudioTokens && containsAudioRatios {
-		service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), "")
-	} else {
-		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
-	}
-	return nil
+	return settleCompletedAttempt(info, func() {
+		if containAudioTokens && containsAudioRatios {
+			service.PostAudioConsumeQuota(c, info, usage.(*dto.Usage), "")
+		} else {
+			service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+		}
+	})
 }
